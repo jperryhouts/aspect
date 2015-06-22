@@ -222,6 +222,17 @@ namespace aspect
       std::vector<double> viscosities;
 
       /**
+       * Constitutive tensors at the given positions. This variable
+       * can be used to implement various non-newtonian rheologies
+       * such as anisotropic viscosity structures.
+       *
+       * @note: this will be multiplied with the viscosity scalar
+       * for the final constitutive law. If no value is assigned,
+       * the identity tensor will be used by default.
+       */
+      std::vector<SymmetricTensor<4,dim> > consitutive_tensors;
+
+      /**
        * Density values at the given positions.
        */
       std::vector<double> densities;
@@ -585,6 +596,13 @@ namespace aspect
          * Specifically, the reference viscosity appears in the factor scaling
          * the pressure against the velocity. It is also used in computing
          * dimension-less quantities.
+         *
+         * @note the reference viscosity should take in to account the complete
+         * constitutive relationship, defined as the scalar viscosity times the
+         * constitutive tensor. In most cases, the constitutive tensor will simply
+         * be the identity tensor (this is the default case), but this may become
+         * important for material models with anisotropic viscosities, if the
+         * constitutive tensor is not normalized.
          */
         virtual double reference_viscosity () const = 0;
 

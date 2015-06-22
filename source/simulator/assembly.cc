@@ -1014,6 +1014,9 @@ namespace aspect
 
         const double eta = scratch.material_model_outputs.viscosities[q];
 
+        const SymmetricTensor<4,dim> constitutive_tensor =
+          scratch.material_model_outputs.consitutive_tensors[q];
+
         for (unsigned int i=0; i<dofs_per_cell; ++i)
           for (unsigned int j=0; j<dofs_per_cell; ++j)
             if (finite_element.system_to_component_index(i).first
@@ -1021,6 +1024,7 @@ namespace aspect
                 finite_element.system_to_component_index(j).first)
               data.local_matrix(i,j) += (eta *
                                          (scratch.grads_phi_u[i] *
+                                          constitutive_tensor *
                                           scratch.grads_phi_u[j])
                                          +
                                          (1./eta) *
@@ -1214,11 +1218,19 @@ namespace aspect
               }
           }
 
+        // Viscosity scalar
         const double eta = (rebuild_stokes_matrix
                             ?
                             scratch.material_model_outputs.viscosities[q]
                             :
                             std::numeric_limits<double>::quiet_NaN());
+
+        // Constitutive tensor
+        if (is_compressible)
+          Assert(scratch.material_model_outputs.consitutive_tensors[q] == dealii::identity_tensor<dim> (),
+                 ExcMessage("Anisotropic viscosity currently only works with incompressible models."));
+
+        const SymmetricTensor<4,dim> constitutive_tensor = scratch.material_model_outputs.consitutive_tensors[q];
 
         const Tensor<1,dim>
         gravity = gravity_model->gravity_vector (scratch.finite_element_values.quadrature_point(q));
@@ -1234,7 +1246,7 @@ namespace aspect
         if (rebuild_stokes_matrix)
           for (unsigned int i=0; i<dofs_per_cell; ++i)
             for (unsigned int j=0; j<dofs_per_cell; ++j)
-              data.local_matrix(i,j) += ( eta * 2.0 * (scratch.grads_phi_u[i] * scratch.grads_phi_u[j])
+              data.local_matrix(i,j) += ( eta * 2.0 * (scratch.grads_phi_u[i] * constitutive_tensor * scratch.grads_phi_u[j])
                                           - (is_compressible
                                              ?
                                              eta * 2.0/3.0 * (scratch.div_phi_u[i] * scratch.div_phi_u[j])
