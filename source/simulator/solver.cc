@@ -437,8 +437,7 @@ namespace aspect
       {
         pcout << "   Solving "
               << introspection.name_for_compositional_index(advection_field.compositional_variable)
-              << " system "
-              << "... " << std::flush;
+              << " system... " << std::flush;
       }
 
     // Create distributed vector (we need all blocks here even though we only
