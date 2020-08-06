@@ -35,14 +35,14 @@ namespace aspect
                        Triangulation<boundarydim, dim>::smoothing_on_refinement | Triangulation<boundarydim, dim>::smoothing_on_coarsening),
                      parallel::distributed::Triangulation<boundarydim, dim>::mesh_reconstruction_after_repartitioning),
       dof_handler (triangulation),
-      fe (FE_Q<boundarydim, dim> (2), 2 /* Crustal flow velocity */,
+      fe (FE_Q<boundarydim, dim> (2), boundarydim /* Crustal flow velocity */,
           FE_Q<boundarydim, dim> (1), 1 /* Crustal thickness */,
           FE_Q<boundarydim, dim> (1), 1 /* Elastic plate deflection */,
           FE_Q<boundarydim, dim> (1), 1 /* Overburden load */),
       u_extractor (0),
-      h_extractor (2),
-      w_extractor (3),
-      s_extractor (4)
+      h_extractor (boundarydim),
+      w_extractor (boundarydim+1),
+      s_extractor (boundarydim+2)
     {}
 
 
