@@ -37,7 +37,7 @@ namespace aspect
       dof_handler (triangulation),
       fe (FE_Q<boundarydim, dim> (2), boundarydim /* Crustal flow velocity */,
           FE_Q<boundarydim, dim> (1), 1 /* Crustal thickness */,
-          FE_Q<boundarydim, dim> (1), 1 /* Elastic plate deflection */,
+          FE_Q<boundarydim, dim> (2), 1 /* Elastic plate deflection */,
           FE_Q<boundarydim, dim> (1), 1 /* Overburden load */),
       u_extractor (0),
       h_extractor (boundarydim),
