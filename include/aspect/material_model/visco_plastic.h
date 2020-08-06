@@ -324,11 +324,12 @@ namespace aspect
          * This function calculates viscosities assuming that all the compositional fields
          * experience the same strain rate (isostrain).
          */
-        std::pair<std::vector<double>, std::vector<bool> >
-        calculate_isostrain_viscosities ( const MaterialModel::MaterialModelInputs<dim> &in,
-                                          MaterialModel::MaterialModelOutputs<dim> &out,
-                                          const unsigned int i,
-                                          const std::vector<double> &volume_fractions,
+        std::tuple<std::vector<double>, std::vector<bool>, double >
+        calculate_isostrain_viscosities ( const std::vector<double> &volume_fractions,
+                                          const double &pressure,
+                                          const double &temperature,
+                                          const std::vector<double> &composition,
+                                          const SymmetricTensor<2,dim> &strain_rate,
                                           const ViscosityScheme &viscous_type,
                                           const YieldScheme &yield_type,
                                           const std::vector<double> &phase_function_values = std::vector<double>()) const;
@@ -345,6 +346,17 @@ namespace aspect
                                    const MaterialModel::MaterialModelInputs<dim> &in,
                                    MaterialModel::MaterialModelOutputs<dim> &out) const;
 
+
+        /**
+         * A function that fills the diffusion additional output in the
+         * MaterialModelOutputs object that is handed over, if it exists.
+         * Does nothing otherwise.
+         */
+        void fill_diffusion_outputs (const unsigned int i,
+                                    const std::vector<double> &volume_fractions,
+                                    const MaterialModel::MaterialModelInputs<dim> &in,
+                                     MaterialModel::MaterialModelOutputs<dim> &out) const;
+
         /**
          * A function that fills the viscosity derivatives in the
          * MaterialModelOutputs object that is handed over, if they exist.
@@ -354,8 +366,7 @@ namespace aspect
                                            const std::vector<double> &volume_fractions,
                                            const std::vector<double> &composition_viscosities,
                                            const MaterialModel::MaterialModelInputs<dim> &in,
-                                           MaterialModel::MaterialModelOutputs<dim> &out,
-                                           const std::vector<double> &phase_function_values = std::vector<double>()) const;
+                                           MaterialModel::MaterialModelOutputs<dim> &out) const;
 
 
         /**
