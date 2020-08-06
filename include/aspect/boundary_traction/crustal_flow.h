@@ -126,7 +126,7 @@ namespace aspect
         parallel::distributed::Triangulation<boundarydim, dim> triangulation;
         DoFHandler<boundarydim, dim> dof_handler;
         FESystem<boundarydim, dim> fe;
-        ConstraintMatrix constraints;
+        AffineConstraints<double> constraints;
 
         IndexSet locally_owned_dofs;
         IndexSet locally_relevant_dofs;
