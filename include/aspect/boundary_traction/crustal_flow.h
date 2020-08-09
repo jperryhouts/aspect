@@ -36,7 +36,7 @@
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/solver_minres.h>
-#include <deal.II/lac/constraint_matrix.h>
+#include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/tria_accessor.h>
@@ -96,6 +96,11 @@ namespace aspect
          */
         CrustalFlow ();
 
+        /*
+         * Destructor
+         */
+        ~CrustalFlow ();
+
         /**
          * Initialization function. This function is called once at the
          * beginning of the program. Checks preconditions.
@@ -137,21 +142,26 @@ namespace aspect
         dealii::LinearAlgebraTrilinos::MPI::Vector system_rhs;
 
         const FEValuesExtractors::Vector u_extractor;
+        const FEValuesExtractors::Scalar p_extractor;
         const FEValuesExtractors::Scalar h_extractor;
-        const FEValuesExtractors::Scalar w_extractor;
         const FEValuesExtractors::Scalar s_extractor;
 
         void setup_dofs ();
         void assemble_system (const double dt);
         void solve ();
         void refine_mesh ();
+        void output_results (const unsigned int timestep,
+                             const double time);
         double get_dt ();
 
-        double rho_c=2650;
-        double rho_m=3300;
-        double rho_s=3550;
+        double RHO_C=2650;
+        double RHO_M=3300;
+        double RHO_S=3550;
 
         types::boundary_id surface_boundary_id;
+
+        static constexpr double PI = 3.14159;
+        static constexpr double ETA = 1.0;
     };
   }
 }
