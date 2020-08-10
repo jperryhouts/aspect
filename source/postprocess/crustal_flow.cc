@@ -27,33 +27,33 @@ namespace aspect
 {
   namespace Postprocess
   {
-    template <int dim>
-    CrustalFlow<dim>::CrustalFlow ()
+    template <int spacedim>
+    CrustalFlow<spacedim>::CrustalFlow ()
       :
       triangulation (MPI_COMM_WORLD,
-                     typename Triangulation<boundarydim, dim>::MeshSmoothing (
-                       Triangulation<boundarydim, dim>::smoothing_on_refinement | Triangulation<boundarydim, dim>::smoothing_on_coarsening)),
-  /*parallel::distributed::Triangulation<boundarydim, dim>::mesh_reconstruction_after_repartitioning),*/
+                     typename Triangulation<dim, spacedim>::MeshSmoothing (
+                       Triangulation<dim, spacedim>::smoothing_on_refinement | Triangulation<dim, spacedim>::smoothing_on_coarsening)),
+  /*parallel::distributed::Triangulation<dim, spacedim>::mesh_reconstruction_after_repartitioning),*/
       dof_handler (triangulation),
-      fe (FE_Q<boundarydim, dim> (2), boundarydim /* Crustal flow velocity */,
-          FE_Q<boundarydim, dim> (1), 1 /* P -- Crustal thickness */,
-          FE_Q<boundarydim, dim> (1), 1 /* h -- Elastic plate deflection */,
-          FE_Q<boundarydim, dim> (1), 1 /* s -- Overburden load */),
+      fe (FE_Q<dim, spacedim> (2), dim /* Crustal flow velocity */,
+          FE_Q<dim, spacedim> (1), 1 /* P -- Crustal thickness */,
+          FE_Q<dim, spacedim> (1), 1 /* h -- Elastic plate deflection */,
+          FE_Q<dim, spacedim> (1), 1 /* s -- Overburden load */),
       u_extractor (0),
-      p_extractor (boundarydim),
-      h_extractor (boundarydim+1),
-      s_extractor (boundarydim+2)
+      p_extractor (dim),
+      h_extractor (dim+1),
+      s_extractor (dim+2)
     {}
 
-    template <int dim>
-    CrustalFlow<dim>::~CrustalFlow ()
+    template <int spacedim>
+    CrustalFlow<spacedim>::~CrustalFlow ()
     {
       dof_handler.clear ();
     }
 
-    template <int dim>
+    template <int spacedim>
     void
-    CrustalFlow<dim>::initialize ()
+    CrustalFlow<spacedim>::initialize ()
     {
       surface_boundary_id =
         this->get_geometry_model().translate_symbolic_boundary_name_to_id("top");
@@ -84,21 +84,21 @@ namespace aspect
       }
     }
 
-    template <int dim>
+    template <int spacedim>
     void
-    CrustalFlow<dim>::update()
+    CrustalFlow<spacedim>::update()
     {}
 
 
-    // template <int dim>
-    // Tensor<1,dim>
-    // CrustalFlow<dim>::
+    // template <int spacedim>
+    // Tensor<1,spacedim>
+    // CrustalFlow<spacedim>::
     // boundary_traction (const types::boundary_id,
-    //                    const Point<dim> &,
-    //                    const Tensor<1,dim> &normal_vector) const
-    template <int dim>
+    //                    const Point<spacedim> &,
+    //                    const Tensor<1,spacedim> &normal_vector) const
+    template <int spacedim>
     std::pair<std::string,std::string>
-    CrustalFlow<dim>::
+    CrustalFlow<spacedim>::
     execute (TableHandler &)
     {
       double geodynamic_timestep = this->get_timestep();
@@ -123,9 +123,9 @@ namespace aspect
                              Utilities::int_to_string(crustal_flow_timestep));
     }
 
-    template <int dim>
+    template <int spacedim>
     void
-    CrustalFlow<dim>::
+    CrustalFlow<spacedim>::
     setup_dofs()
     {
       dof_handler.distribute_dofs (fe);
@@ -140,19 +140,19 @@ namespace aspect
         constraints.reinit (locally_relevant_dofs);
         DoFTools::make_hanging_node_constraints (dof_handler, constraints);
         VectorTools::interpolate_boundary_values (dof_handler, 0,
-                                                  Functions::ZeroFunction<dim>(5),
+                                                  Functions::ZeroFunction<spacedim>(5),
                                                   constraints,
                                                   fe.component_mask(p_extractor)
                                                   | fe.component_mask(h_extractor)
                                                   | fe.component_mask(s_extractor));
 
-        std::vector<Point<dim> >  constraint_locations;
+        std::vector<Point<spacedim> >  constraint_locations;
         std::vector<unsigned int> constraint_component_indices;
         std::vector<double>       constraint_values;
 
         for (unsigned int i = 0; i < constraint_locations.size(); ++i)
           {
-            const Point<dim> constrain_where = constraint_locations[i]; // TODO
+            const Point<spacedim> constrain_where = constraint_locations[i]; // TODO
             const unsigned int constraint_component_index = constraint_component_indices[i];
             const double constraint_value = constraint_values[i];
 
@@ -160,10 +160,10 @@ namespace aspect
             double min_local_distance = std::numeric_limits<double>::max();
             unsigned int local_best_dof_index;
 
-            const std::vector<Point<boundarydim> > points = fe.get_unit_support_points();
-            const Quadrature<boundarydim> quadrature (points);
-            FEValues<boundarydim, dim> fe_values (fe, quadrature, update_quadrature_points);
-            typename DoFHandler<boundarydim,dim>::active_cell_iterator cell;
+            const std::vector<Point<dim> > points = fe.get_unit_support_points();
+            const Quadrature<dim> quadrature (points);
+            FEValues<dim, spacedim> fe_values (fe, quadrature, update_quadrature_points);
+            typename DoFHandler<dim,spacedim>::active_cell_iterator cell;
             for (cell = dof_handler.begin_active(); cell != dof_handler.end(); ++cell)
               {
                 if (! cell->is_artificial())
@@ -181,7 +181,7 @@ namespace aspect
                             const unsigned int c_idx = fe.system_to_component_index(q).first;
                             if (c_idx == constraint_component_index)
                               {
-                                const Point<dim> p = fe_values.quadrature_point(q);
+                                const Point<spacedim> p = fe_values.quadrature_point(q);
                                 const double distance = constrain_where.distance(p);
                                 if (distance < min_local_distance)
                                   {
@@ -226,13 +226,13 @@ namespace aspect
       }
     }
 
-    template <int dim>
+    template <int spacedim>
     void
-    CrustalFlow<dim>::
+    CrustalFlow<spacedim>::
     assemble_system(const double dt)
     {
-      const QGauss<boundarydim> quadrature_formula (5);
-      FEValues<boundarydim,dim> fe_values (fe, quadrature_formula,
+      const QGauss<dim> quadrature_formula (5);
+      FEValues<dim,spacedim> fe_values (fe, quadrature_formula,
                                            update_values | update_JxW_values | update_gradients
                                            | update_quadrature_points);
       const unsigned int dofs_per_cell = fe.dofs_per_cell;
@@ -242,7 +242,7 @@ namespace aspect
 
       std::vector<types::global_dof_index> local_dof_indices (dofs_per_cell);
 
-      std::vector<Tensor<1,dim> > phi_u (dofs_per_cell);
+      std::vector<Tensor<1,spacedim> > phi_u (dofs_per_cell);
       std::vector<double> phi_p (dofs_per_cell);
       std::vector<double> phi_h (dofs_per_cell);
       std::vector<double> phi_s (dofs_per_cell);
@@ -252,7 +252,7 @@ namespace aspect
       std::vector<double> old_h_values (n_q_points);
       std::vector<double> old_s_values (n_q_points);
 
-      typename DoFHandler<boundarydim,dim>::active_cell_iterator cell =
+      typename DoFHandler<dim,spacedim>::active_cell_iterator cell =
         dof_handler.begin_active (), endc = dof_handler.end ();
       for (; cell != endc; ++cell)
         if (cell->is_locally_owned ())
@@ -277,7 +277,7 @@ namespace aspect
                     div_phi_u[k] = fe_values[u_extractor].divergence (k,q);
                   }
 
-                Point<dim> loc = fe_values.quadrature_point (q);
+                Point<spacedim> loc = fe_values.quadrature_point (q);
                 const double sigma_zz = RHO_C * old_h_values[q] + RHO_S * old_s_values[q];
                 const double emplacement = 1e-7*std::cos(PI*loc[0]);
                 const double h_n = old_h_values[q] + 1;
@@ -316,9 +316,9 @@ namespace aspect
       system_rhs.compress (VectorOperation::add);
     }
 
-    template <int dim>
+    template <int spacedim>
     void
-    CrustalFlow<dim>::
+    CrustalFlow<spacedim>::
     solve()
     {
       dealii::LinearAlgebraTrilinos::MPI::Vector distributed_solution (
@@ -347,19 +347,19 @@ namespace aspect
         }
     }
 
-    template <int dim>
+    template <int spacedim>
     void
-    CrustalFlow<dim>::
+    CrustalFlow<spacedim>::
     refine_mesh()
     {
-      parallel::distributed::SolutionTransfer<boundarydim,
-               TrilinosWrappers::MPI::Vector, DoFHandler<boundarydim,dim>>
+      parallel::distributed::SolutionTransfer<dim,
+               TrilinosWrappers::MPI::Vector, DoFHandler<dim,spacedim>>
                solutionTx (dof_handler);
 
       {
         Vector<float> estimated_error_per_cell (triangulation.n_active_cells ());
-        KellyErrorEstimator<boundarydim, dim>::estimate (dof_handler, QGauss<boundarydim-1> (3),
-                                                         std::map<types::boundary_id, const Function<dim> *>(),
+        KellyErrorEstimator<dim, spacedim>::estimate (dof_handler, QGauss<dim-1> (3),
+                                                         std::map<types::boundary_id, const Function<spacedim> *>(),
                                                          locally_relevant_solution,
                                                          estimated_error_per_cell,
                                                          fe.component_mask(u_extractor) | fe.component_mask(p_extractor),
@@ -369,11 +369,11 @@ namespace aspect
 
         // Limit refinement to min/max levels
         // if (triangulation.n_levels () > ( 5 ))
-        //   for (typename Triangulation<boundarydim, dim>::active_cell_iterator cell =
+        //   for (typename Triangulation<dim, spacedim>::active_cell_iterator cell =
         //          triangulation.begin_active ( 5 );
         //        cell != triangulation.end (); ++cell)
         //     cell->clear_refine_flag ();
-        // for (typename Triangulation<boundarydim, dim>::active_cell_iterator cell =
+        // for (typename Triangulation<dim, spacedim>::active_cell_iterator cell =
         //        triangulation.begin_active ( 4 );
         //      cell != triangulation.end_active ( 4 ); ++cell)
         //   cell->clear_coarsen_flag ();
@@ -399,21 +399,21 @@ namespace aspect
       }
     }
 
-    template <int dim>
+    template <int spacedim>
     void
-    CrustalFlow<dim>::
+    CrustalFlow<spacedim>::
     output_results (const unsigned int timestep,
                     const double time)
     {
       const std::string output_directory = this->get_output_directory();
       const std::string vis_directory = output_directory + "/crustal_flow";
 
-      DataOut<boundarydim,DoFHandler<boundarydim,dim>> data_out;
+      DataOut<dim,DoFHandler<dim,spacedim>> data_out;
       data_out.attach_dof_handler (dof_handler);
 
       std::vector<DataComponentInterpretation::DataComponentInterpretation> data_component_interpretation(0);
       std::vector<std::string> solution_name(0);
-      for (unsigned int i=0; i<boundarydim; ++i)
+      for (unsigned int i=0; i<dim; ++i)
         {
           // data_component_interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
           data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
@@ -428,7 +428,7 @@ namespace aspect
       solution_name.push_back ("Sill_Thickness");
 
       data_out.add_data_vector (locally_relevant_solution, solution_name,
-                                DataOut<boundarydim,DoFHandler<boundarydim,dim>>::type_dof_data,
+                                DataOut<dim,DoFHandler<dim,spacedim>>::type_dof_data,
                                 data_component_interpretation);
 
       data_out.build_patches ();
@@ -463,19 +463,19 @@ namespace aspect
         }
     }
 
-    template <int dim>
+    template <int spacedim>
     double
-    CrustalFlow<dim>::
+    CrustalFlow<spacedim>::
     get_dt(const double max_dt)
     {
       const unsigned int velocity_degree = 2;
-      const QIterated<boundarydim> quadrature_formula (QTrapez<1> (), velocity_degree);
+      const QIterated<dim> quadrature_formula (QTrapez<1> (), velocity_degree);
       const unsigned int n_q_points = quadrature_formula.size ();
-      FEValues<boundarydim,dim> fe_values (fe, quadrature_formula, update_values);
-      std::vector<Tensor<1, dim> > velocity_values (n_q_points);
+      FEValues<dim,spacedim> fe_values (fe, quadrature_formula, update_values);
+      std::vector<Tensor<1, spacedim> > velocity_values (n_q_points);
       double max_local_cfl = 0;
 
-      typename DoFHandler<boundarydim,dim>::active_cell_iterator cell =
+      typename DoFHandler<dim,spacedim>::active_cell_iterator cell =
         dof_handler.begin_active (), endc = dof_handler.end ();
       for (; cell != endc; ++cell)
         if (cell->is_locally_owned ())

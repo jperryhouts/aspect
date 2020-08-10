@@ -89,8 +89,8 @@ namespace aspect
      *
      * @ingroup BoundaryTractions
      */
-    template <int dim>
-    class CrustalFlow : public Interface<dim>, public SimulatorAccess<dim>
+    template <int spacedim>
+    class CrustalFlow : public Interface<spacedim>, public SimulatorAccess<spacedim>
     {
       public:
         /**
@@ -125,19 +125,19 @@ namespace aspect
          */
         std::pair<std::string,std::string>
         execute (TableHandler &statistics) override;
-        // Tensor<1,dim>
+        // Tensor<1,spacedim>
         // boundary_traction (const types::boundary_id boundary_indicator,
-        //                    const Point<dim> &p,
-        //                    const Tensor<1,dim> &normal) const override;
+        //                    const Point<spacedim> &p,
+        //                    const Tensor<1,spacedim> &normal) const override;
 
         // void save (std::map<std::string, std::string> &status_strings) const override;
         // void load (const std::map<std::string, std::string> &status_strings) override;
 
       private:
-        static constexpr unsigned int boundarydim = dim - 1;
-        parallel::distributed::Triangulation<boundarydim, dim> triangulation;
-        DoFHandler<boundarydim, dim> dof_handler;
-        FESystem<boundarydim, dim> fe;
+        static constexpr unsigned int dim = spacedim - 1;
+        parallel::distributed::Triangulation<dim, spacedim> triangulation;
+        DoFHandler<dim, spacedim> dof_handler;
+        FESystem<dim, spacedim> fe;
         AffineConstraints<double> constraints;
 
         IndexSet locally_owned_dofs;
