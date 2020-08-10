@@ -34,8 +34,8 @@ namespace aspect
                      typename Triangulation<dim, spacedim>::MeshSmoothing (
                        Triangulation<dim, spacedim>::smoothing_on_refinement | Triangulation<dim, spacedim>::smoothing_on_coarsening)),
   /*parallel::distributed::Triangulation<dim, spacedim>::mesh_reconstruction_after_repartitioning),*/
-      dof_handler (triangulation),
-      fe (FE_Q<dim, spacedim> (2), dim /* Crustal flow velocity */,
+      flow_dof_handler (triangulation),
+      flow_fe (FE_Q<dim, spacedim> (2), dim /* Crustal flow velocity */,
           FE_Q<dim, spacedim> (1), 1 /* P -- Crustal thickness */,
           FE_Q<dim, spacedim> (1), 1 /* h -- Elastic plate deflection */,
           FE_Q<dim, spacedim> (1), 1 /* s -- Overburden load */),
@@ -48,7 +48,7 @@ namespace aspect
     template <int spacedim>
     CrustalFlow<spacedim>::~CrustalFlow ()
     {
-      dof_handler.clear ();
+      flow_dof_handler.clear ();
     }
 
     template <int spacedim>
@@ -73,12 +73,12 @@ namespace aspect
         //                                      triangulation,
         //                                      boundary_ids);
 
-        setup_dofs();
+        setup_flow_dofs();
 
         for (unsigned int i=0; i<2; ++i)
         {
-          assemble_system(0);
-          solve();
+          assemble_flow_system(0);
+          solve_flow();
           refine_mesh();
         }
       }
@@ -108,8 +108,8 @@ namespace aspect
       do
         {
           dt = get_dt(geodynamic_timestep-crustal_flow_time);
-          assemble_system(dt);
-          solve();
+          assemble_flow_system(dt);
+          solve_flow();
           crustal_flow_time += dt;
           crustal_flow_timestep += 1;
         }
@@ -126,25 +126,25 @@ namespace aspect
     template <int spacedim>
     void
     CrustalFlow<spacedim>::
-    setup_dofs()
+    setup_flow_dofs()
     {
-      dof_handler.distribute_dofs (fe);
+      flow_dof_handler.distribute_dofs (flow_fe);
       {
-        locally_owned_dofs = dof_handler.locally_owned_dofs ();
-        DoFTools::extract_locally_relevant_dofs (dof_handler,
-                                                 locally_relevant_dofs);
+        locally_owned_flow_dofs = flow_dof_handler.locally_owned_dofs ();
+        DoFTools::extract_locally_relevant_dofs (flow_dof_handler,
+                                                 locally_relevant_flow_dofs);
       }
 
       {
-        constraints.clear ();
-        constraints.reinit (locally_relevant_dofs);
-        DoFTools::make_hanging_node_constraints (dof_handler, constraints);
-        VectorTools::interpolate_boundary_values (dof_handler, 0,
+        flow_constraints.clear ();
+        flow_constraints.reinit (locally_relevant_flow_dofs);
+        DoFTools::make_hanging_node_constraints (flow_dof_handler, flow_constraints);
+        VectorTools::interpolate_boundary_values (flow_dof_handler, 0,
                                                   Functions::ZeroFunction<spacedim>(5),
-                                                  constraints,
-                                                  fe.component_mask(p_extractor)
-                                                  | fe.component_mask(h_extractor)
-                                                  | fe.component_mask(s_extractor));
+                                                  flow_constraints,
+                                                  flow_fe.component_mask(p_extractor)
+                                                  | flow_fe.component_mask(h_extractor)
+                                                  | flow_fe.component_mask(s_extractor));
 
         std::vector<Point<spacedim> >  constraint_locations;
         std::vector<unsigned int> constraint_component_indices;
@@ -160,28 +160,28 @@ namespace aspect
             double min_local_distance = std::numeric_limits<double>::max();
             unsigned int local_best_dof_index;
 
-            const std::vector<Point<dim> > points = fe.get_unit_support_points();
+            const std::vector<Point<dim> > points = flow_fe.get_unit_support_points();
             const Quadrature<dim> quadrature (points);
-            FEValues<dim, spacedim> fe_values (fe, quadrature, update_quadrature_points);
+            FEValues<dim, spacedim> flow_fe_values (flow_fe, quadrature, update_quadrature_points);
             typename DoFHandler<dim,spacedim>::active_cell_iterator cell;
-            for (cell = dof_handler.begin_active(); cell != dof_handler.end(); ++cell)
+            for (cell = flow_dof_handler.begin_active(); cell != flow_dof_handler.end(); ++cell)
               {
                 if (! cell->is_artificial())
                   {
-                    fe_values.reinit(cell);
-                    std::vector<unsigned int> local_dof_indices(fe.dofs_per_cell);
+                    flow_fe_values.reinit(cell);
+                    std::vector<unsigned int> local_dof_indices(flow_fe.dofs_per_cell);
                     cell->get_dof_indices (local_dof_indices);
 
                     for (unsigned int q=0; q<quadrature.size(); q++)
                       {
                         // If it's okay to constrain this DOF
-                        if (constraints.can_store_line(local_dof_indices[q]) &&
-                            !constraints.is_constrained(local_dof_indices[q]))
+                        if (flow_constraints.can_store_line(local_dof_indices[q]) &&
+                            !flow_constraints.is_constrained(local_dof_indices[q]))
                           {
-                            const unsigned int c_idx = fe.system_to_component_index(q).first;
+                            const unsigned int c_idx = flow_fe.system_to_component_index(q).first;
                             if (c_idx == constraint_component_index)
                               {
-                                const Point<spacedim> p = fe_values.quadrature_point(q);
+                                const Point<spacedim> p = flow_fe_values.quadrature_point(q);
                                 const double distance = constrain_where.distance(p);
                                 if (distance < min_local_distance)
                                   {
@@ -196,32 +196,32 @@ namespace aspect
             const double global_nearest = Utilities::MPI::min (min_local_distance, MPI_COMM_WORLD);
             if (min_local_distance == global_nearest)
               {
-                constraints.add_line (local_best_dof_index);
-                constraints.set_inhomogeneity (local_best_dof_index, constraint_value);
+                flow_constraints.add_line (local_best_dof_index);
+                flow_constraints.set_inhomogeneity (local_best_dof_index, constraint_value);
               }
           }
-        constraints.close ();
+        flow_constraints.close ();
       }
 
       {
-        TrilinosWrappers::SparsityPattern dsp(locally_owned_dofs,
-                                              locally_owned_dofs,
-                                              locally_relevant_dofs,
+        TrilinosWrappers::SparsityPattern dsp(locally_owned_flow_dofs,
+                                              locally_owned_flow_dofs,
+                                              locally_relevant_flow_dofs,
                                               MPI_COMM_WORLD);
-        DoFTools::make_sparsity_pattern(dof_handler,dsp,constraints);
+        DoFTools::make_sparsity_pattern(flow_dof_handler,dsp,flow_constraints);
         dsp.compress();
-        system_matrix.reinit(dsp);
+        flow_matrix.reinit(dsp);
 
-        // DynamicSparsityPattern dsp (locally_relevant_dofs);
-        // DoFTools::make_sparsity_pattern (dof_handler, dsp, constraints, false);
+        // DynamicSparsityPattern dsp (locally_relevant_flow_dofs);
+        // DoFTools::make_sparsity_pattern (flow_dof_handler, dsp, flow_constraints, false);
         // SparsityTools::distribute_sparsity_pattern (dsp,
-        //                                             dof_handler.n_locally_owned_dofs_per_processor (),
+        //                                             flow_dof_handler.n_locally_owned_dofs_per_processor (),
         //                                             MPI_COMM_WORLD,
-        //                                             locally_relevant_dofs);
-        // system_matrix.reinit (locally_owned_dofs, locally_owned_dofs, dsp, MPI_COMM_WORLD);
+        //                                             locally_relevant_flow_dofs);
+        // flow_matrix.reinit (locally_owned_flow_dofs, locally_owned_flow_dofs, dsp, MPI_COMM_WORLD);
 
-        system_rhs.reinit (locally_owned_dofs, MPI_COMM_WORLD);
-        locally_relevant_solution.reinit (locally_owned_dofs, locally_relevant_dofs,
+        flow_rhs.reinit (locally_owned_flow_dofs, MPI_COMM_WORLD);
+        locally_relevant_flow_solution.reinit (locally_owned_flow_dofs, locally_relevant_flow_dofs,
                                           MPI_COMM_WORLD);
       }
     }
@@ -229,13 +229,13 @@ namespace aspect
     template <int spacedim>
     void
     CrustalFlow<spacedim>::
-    assemble_system(const double dt)
+    assemble_flow_system(const double dt)
     {
       const QGauss<dim> quadrature_formula (5);
-      FEValues<dim,spacedim> fe_values (fe, quadrature_formula,
+      FEValues<dim,spacedim> flow_fe_values (flow_fe, quadrature_formula,
                                            update_values | update_JxW_values | update_gradients
                                            | update_quadrature_points);
-      const unsigned int dofs_per_cell = fe.dofs_per_cell;
+      const unsigned int dofs_per_cell = flow_fe.dofs_per_cell;
       const unsigned int n_q_points = quadrature_formula.size ();
       FullMatrix<double> cell_matrix (dofs_per_cell, dofs_per_cell);
       Vector<double> cell_rhs (dofs_per_cell);
@@ -253,31 +253,31 @@ namespace aspect
       std::vector<double> old_s_values (n_q_points);
 
       typename DoFHandler<dim,spacedim>::active_cell_iterator cell =
-        dof_handler.begin_active (), endc = dof_handler.end ();
+        flow_dof_handler.begin_active (), endc = flow_dof_handler.end ();
       for (; cell != endc; ++cell)
         if (cell->is_locally_owned ())
           {
             cell_matrix = 0;
             cell_rhs = 0;
-            fe_values.reinit (cell);
+            flow_fe_values.reinit (cell);
 
-            fe_values[h_extractor].get_function_values (locally_relevant_solution,
+            flow_fe_values[h_extractor].get_function_values (locally_relevant_flow_solution,
                                                         old_h_values);
-            fe_values[s_extractor].get_function_values (locally_relevant_solution,
+            flow_fe_values[s_extractor].get_function_values (locally_relevant_flow_solution,
                                                         old_s_values);
 
             for (unsigned int q = 0; q < n_q_points; ++q)
               {
                 for (unsigned int k = 0; k < dofs_per_cell; ++k)
                   {
-                    phi_u[k] = fe_values[u_extractor].value (k,q);
-                    phi_p[k] = fe_values[p_extractor].value (k,q);
-                    phi_h[k] = fe_values[h_extractor].value (k,q);
-                    phi_s[k] = fe_values[s_extractor].value (k,q);
-                    div_phi_u[k] = fe_values[u_extractor].divergence (k,q);
+                    phi_u[k] = flow_fe_values[u_extractor].value (k,q);
+                    phi_p[k] = flow_fe_values[p_extractor].value (k,q);
+                    phi_h[k] = flow_fe_values[h_extractor].value (k,q);
+                    phi_s[k] = flow_fe_values[s_extractor].value (k,q);
+                    div_phi_u[k] = flow_fe_values[u_extractor].divergence (k,q);
                   }
 
-                Point<spacedim> loc = fe_values.quadrature_point (q);
+                Point<spacedim> loc = flow_fe_values.quadrature_point (q);
                 const double sigma_zz = RHO_C * old_h_values[q] + RHO_S * old_s_values[q];
                 const double emplacement = 1e-7*std::cos(PI*loc[0]);
                 const double h_n = old_h_values[q] + 1;
@@ -296,7 +296,7 @@ namespace aspect
                                                 + phi_h[i] * (phi_h[j] + dt*(2.0/3.0)*div_phi_u[j])
 
                                                 + phi_s[i] * phi_s[j]
-                                              ) * fe_values.JxW (q) ;
+                                              ) * flow_fe_values.JxW (q) ;
                       }
                     cell_rhs (i) += (
 
@@ -305,32 +305,32 @@ namespace aspect
                                       + phi_h[i] * old_h_values[q]
 
                                       + phi_s[i] * (old_s_values[q] + dt*emplacement)
-                                    ) * fe_values.JxW (q);
+                                    ) * flow_fe_values.JxW (q);
                   }
               }
             cell->get_dof_indices (local_dof_indices);
-            constraints.distribute_local_to_global (cell_matrix, cell_rhs,
-                                                    local_dof_indices, system_matrix, system_rhs);
+            flow_constraints.distribute_local_to_global (cell_matrix, cell_rhs,
+                                                    local_dof_indices, flow_matrix, flow_rhs);
           }
-      system_matrix.compress (VectorOperation::add);
-      system_rhs.compress (VectorOperation::add);
+      flow_matrix.compress (VectorOperation::add);
+      flow_rhs.compress (VectorOperation::add);
     }
 
     template <int spacedim>
     void
     CrustalFlow<spacedim>::
-    solve()
+    solve_flow()
     {
       dealii::LinearAlgebraTrilinos::MPI::Vector distributed_solution (
-        locally_owned_dofs, MPI_COMM_WORLD);
+        locally_owned_flow_dofs, MPI_COMM_WORLD);
 
       SolverControl cn;
       TrilinosWrappers::SolverDirect solver (cn);
       try
         {
-          solver.solve (system_matrix, distributed_solution, system_rhs);
-          constraints.distribute (distributed_solution);
-          locally_relevant_solution = distributed_solution;
+          solver.solve (flow_matrix, distributed_solution, flow_rhs);
+          flow_constraints.distribute (distributed_solution);
+          locally_relevant_flow_solution = distributed_solution;
         }
       catch (const std::exception &exc)
         {
@@ -354,15 +354,15 @@ namespace aspect
     {
       parallel::distributed::SolutionTransfer<dim,
                TrilinosWrappers::MPI::Vector, DoFHandler<dim,spacedim>>
-               solutionTx (dof_handler);
+               solutionTx (flow_dof_handler);
 
       {
         Vector<float> estimated_error_per_cell (triangulation.n_active_cells ());
-        KellyErrorEstimator<dim, spacedim>::estimate (dof_handler, QGauss<dim-1> (3),
+        KellyErrorEstimator<dim, spacedim>::estimate (flow_dof_handler, QGauss<dim-1> (3),
                                                          std::map<types::boundary_id, const Function<spacedim> *>(),
-                                                         locally_relevant_solution,
+                                                         locally_relevant_flow_solution,
                                                          estimated_error_per_cell,
-                                                         fe.component_mask(u_extractor) | fe.component_mask(p_extractor),
+                                                         flow_fe.component_mask(u_extractor) | flow_fe.component_mask(p_extractor),
                                                          nullptr, 0, triangulation.locally_owned_subdomain ());
         GridRefinement::refine_and_coarsen_fixed_fraction (
           triangulation, estimated_error_per_cell, 0.5, 0.3);
@@ -380,22 +380,22 @@ namespace aspect
 
         // Transfer solution onto new mesh
         std::vector<const TrilinosWrappers::MPI::Vector *> solution (1);
-        solution[0] = &locally_relevant_solution;
+        solution[0] = &locally_relevant_flow_solution;
         triangulation.prepare_coarsening_and_refinement ();
         solutionTx.prepare_for_coarsening_and_refinement (solution);
 
         triangulation.execute_coarsening_and_refinement ();
       }
 
-      setup_dofs ();
+      setup_flow_dofs ();
 
       {
-        TrilinosWrappers::MPI::Vector distributed_solution (system_rhs);
+        TrilinosWrappers::MPI::Vector distributed_solution (flow_rhs);
         std::vector<TrilinosWrappers::MPI::Vector *> tmp (1);
         tmp[0] = &(distributed_solution);
         solutionTx.interpolate (tmp);
-        constraints.distribute (distributed_solution);
-        locally_relevant_solution = distributed_solution;
+        flow_constraints.distribute (distributed_solution);
+        locally_relevant_flow_solution = distributed_solution;
       }
     }
 
@@ -409,7 +409,7 @@ namespace aspect
       const std::string vis_directory = output_directory + "/crustal_flow";
 
       DataOut<dim,DoFHandler<dim,spacedim>> data_out;
-      data_out.attach_dof_handler (dof_handler);
+      data_out.attach_dof_handler (flow_dof_handler);
 
       std::vector<DataComponentInterpretation::DataComponentInterpretation> data_component_interpretation(0);
       std::vector<std::string> solution_name(0);
@@ -427,7 +427,7 @@ namespace aspect
       solution_name.push_back ("Crustal_Thickness");
       solution_name.push_back ("Sill_Thickness");
 
-      data_out.add_data_vector (locally_relevant_solution, solution_name,
+      data_out.add_data_vector (locally_relevant_flow_solution, solution_name,
                                 DataOut<dim,DoFHandler<dim,spacedim>>::type_dof_data,
                                 data_component_interpretation);
 
@@ -471,17 +471,17 @@ namespace aspect
       const unsigned int velocity_degree = 2;
       const QIterated<dim> quadrature_formula (QTrapez<1> (), velocity_degree);
       const unsigned int n_q_points = quadrature_formula.size ();
-      FEValues<dim,spacedim> fe_values (fe, quadrature_formula, update_values);
+      FEValues<dim,spacedim> flow_fe_values (flow_fe, quadrature_formula, update_values);
       std::vector<Tensor<1, spacedim> > velocity_values (n_q_points);
       double max_local_cfl = 0;
 
       typename DoFHandler<dim,spacedim>::active_cell_iterator cell =
-        dof_handler.begin_active (), endc = dof_handler.end ();
+        flow_dof_handler.begin_active (), endc = flow_dof_handler.end ();
       for (; cell != endc; ++cell)
         if (cell->is_locally_owned ())
           {
-            fe_values.reinit (cell);
-            fe_values[u_extractor].get_function_values (locally_relevant_solution,
+            flow_fe_values.reinit (cell);
+            flow_fe_values[u_extractor].get_function_values (locally_relevant_flow_solution,
                                                         velocity_values);
             double max_local_velocity = 1e-10;
             for (unsigned int q = 0; q < n_q_points; ++q)

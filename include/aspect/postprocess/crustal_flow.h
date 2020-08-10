@@ -136,26 +136,46 @@ namespace aspect
       private:
         static constexpr unsigned int dim = spacedim - 1;
         parallel::distributed::Triangulation<dim, spacedim> triangulation;
-        DoFHandler<dim, spacedim> dof_handler;
-        FESystem<dim, spacedim> fe;
-        AffineConstraints<double> constraints;
 
-        IndexSet locally_owned_dofs;
-        IndexSet locally_relevant_dofs;
+        DoFHandler<dim, spacedim> flow_dof_handler;
+        FESystem<dim, spacedim> flow_fe;
+        AffineConstraints<double> flow_constraints;
 
-        dealii::LinearAlgebraTrilinos::MPI::SparseMatrix system_matrix;
-        dealii::LinearAlgebraTrilinos::MPI::Vector locally_relevant_solution;
-        dealii::LinearAlgebraTrilinos::MPI::Vector old_locally_relevant_solution;
-        dealii::LinearAlgebraTrilinos::MPI::Vector system_rhs;
+        // DofHandler<dim, spacedim> flexure_dof_handler;
+        // FESystem<dim, spacedim> flexure_fe;
+        // AffineConstraints<double> flexure_constraints;
+
+        IndexSet locally_owned_flow_dofs;
+        IndexSet locally_relevant_flow_dofs;
+
+        // IndexSet locally_owned_flexure_dofs;
+        // IndexSet locally_relevant_flexure_dofs;
+
+        dealii::LinearAlgebraTrilinos::MPI::SparseMatrix flow_matrix;
+        dealii::LinearAlgebraTrilinos::MPI::Vector locally_relevant_flow_solution;
+        dealii::LinearAlgebraTrilinos::MPI::Vector old_locally_relevant_flow_solution;
+        dealii::LinearAlgebraTrilinos::MPI::Vector flow_rhs;
+
+        // dealii::LinearAlgebraTrilinos::MPI::SparseMatrix flexure_matrix;
+        // dealii::LinearAlgebraTrilinos::MPI::Vector locally_relevant_flexure_solution;
+        // dealii::LinearAlgebraTrilinos::MPI::Vector old_locally_relevant_flexure_solution;
+        // dealii::LinearAlgebraTrilinos::MPI::Vector flexure_rhs;
 
         const FEValuesExtractors::Vector u_extractor;
         const FEValuesExtractors::Scalar p_extractor;
         const FEValuesExtractors::Scalar h_extractor;
         const FEValuesExtractors::Scalar s_extractor;
 
-        void setup_dofs ();
-        void assemble_system (const double dt);
-        void solve ();
+        // const FEValuesExtractors::Scalar w_extractor;
+
+        void setup_flow_dofs ();
+        void assemble_flow_system (const double dt);
+        void solve_flow ();
+
+        // void setup_flexure_dofs ();
+        // void assemble_flexure_system (const double dt);
+        // void solve_flexure ();
+
         void refine_mesh ();
         void output_results (const unsigned int timestep,
                              const double time);
