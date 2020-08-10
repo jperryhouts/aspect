@@ -19,21 +19,21 @@
 */
 
 
-#include <aspect/boundary_traction/crustal_flow.h>
+#include <aspect/postprocess/crustal_flow.h>
 #include <aspect/utilities.h>
 #include <aspect/global.h>
 
 namespace aspect
 {
-  namespace BoundaryTraction
+  namespace Postprocess
   {
     template <int dim>
     CrustalFlow<dim>::CrustalFlow ()
       :
       triangulation (MPI_COMM_WORLD,
                      typename Triangulation<boundarydim, dim>::MeshSmoothing (
-                       Triangulation<boundarydim, dim>::smoothing_on_refinement | Triangulation<boundarydim, dim>::smoothing_on_coarsening),
-                     parallel::distributed::Triangulation<boundarydim, dim>::mesh_reconstruction_after_repartitioning),
+                       Triangulation<boundarydim, dim>::smoothing_on_refinement | Triangulation<boundarydim, dim>::smoothing_on_coarsening)),
+  /*parallel::distributed::Triangulation<boundarydim, dim>::mesh_reconstruction_after_repartitioning),*/
       dof_handler (triangulation),
       fe (FE_Q<boundarydim, dim> (2), boundarydim /* Crustal flow velocity */,
           FE_Q<boundarydim, dim> (1), 1 /* P -- Crustal thickness */,
@@ -58,46 +58,69 @@ namespace aspect
       surface_boundary_id =
         this->get_geometry_model().translate_symbolic_boundary_name_to_id("top");
 
+      const std::string vis_directory = this->get_output_directory() + "/crustal_flow";
+      Utilities::create_directory (vis_directory,
+                                   this->get_mpi_communicator(),
+                                   true);
+
       {
         GridGenerator::hyper_sphere(triangulation);
         triangulation.refine_global(3);
-        setup_dofs();
 
         // std::set<types::boundary_id> boundary_ids;
         // boundary_ids.insert(surface_boundary_id);
         // GridGenerator::extract_boundary_mesh(this->get_triangulation(),
         //                                      triangulation,
         //                                      boundary_ids);
+
+        setup_dofs();
+
+        for (unsigned int i=0; i<2; ++i)
+        {
+          assemble_system(0);
+          solve();
+          refine_mesh();
+        }
       }
     }
 
     template <int dim>
     void
     CrustalFlow<dim>::update()
+    {}
+
+
+    // template <int dim>
+    // Tensor<1,dim>
+    // CrustalFlow<dim>::
+    // boundary_traction (const types::boundary_id,
+    //                    const Point<dim> &,
+    //                    const Tensor<1,dim> &normal_vector) const
+    template <int dim>
+    std::pair<std::string,std::string>
+    CrustalFlow<dim>::
+    execute (TableHandler &)
     {
-      double model_timestep = this->get_timestep();
+      double geodynamic_timestep = this->get_timestep();
       double dt;
-      double time = 0;
+      int crustal_flow_timestep = 0;
+      double crustal_flow_time = 0;
       do
         {
-          dt = get_dt();
+          dt = get_dt(geodynamic_timestep-crustal_flow_time);
           assemble_system(dt);
           solve();
-          time += dt;
+          crustal_flow_time += dt;
+          crustal_flow_timestep += 1;
         }
-      while (time < model_timestep);
-    }
+      while (crustal_flow_time < geodynamic_timestep);
 
+      output_results (this->get_timestep_number(), this->get_time());
 
-    template <int dim>
-    Tensor<1,dim>
-    CrustalFlow<dim>::
-    boundary_traction (const types::boundary_id,
-                       const Point<dim> &,
-                       const Tensor<1,dim> &normal_vector) const
-    {
-      double traction = 0;
-      return traction * normal_vector;
+      refine_mesh ();
+
+      return std::make_pair (std::string ("Crustal flow timesteps"),
+                             Utilities::int_to_string(crustal_flow_timestep));
     }
 
     template <int dim>
@@ -180,17 +203,27 @@ namespace aspect
         constraints.close ();
       }
 
-      DynamicSparsityPattern dsp (locally_relevant_dofs);
-      DoFTools::make_sparsity_pattern (dof_handler, dsp, constraints, false);
-      SparsityTools::distribute_sparsity_pattern (dsp,
-                                                  dof_handler.n_locally_owned_dofs_per_processor (),
-                                                  MPI_COMM_WORLD,
-                                                  locally_relevant_dofs);
-      system_matrix.reinit (locally_owned_dofs, locally_owned_dofs, dsp, MPI_COMM_WORLD);
+      {
+        TrilinosWrappers::SparsityPattern dsp(locally_owned_dofs,
+                                              locally_owned_dofs,
+                                              locally_relevant_dofs,
+                                              MPI_COMM_WORLD);
+        DoFTools::make_sparsity_pattern(dof_handler,dsp,constraints);
+        dsp.compress();
+        system_matrix.reinit(dsp);
 
-      system_rhs.reinit (locally_owned_dofs, MPI_COMM_WORLD);
-      locally_relevant_solution.reinit (locally_owned_dofs, locally_relevant_dofs,
-                                        MPI_COMM_WORLD);
+        // DynamicSparsityPattern dsp (locally_relevant_dofs);
+        // DoFTools::make_sparsity_pattern (dof_handler, dsp, constraints, false);
+        // SparsityTools::distribute_sparsity_pattern (dsp,
+        //                                             dof_handler.n_locally_owned_dofs_per_processor (),
+        //                                             MPI_COMM_WORLD,
+        //                                             locally_relevant_dofs);
+        // system_matrix.reinit (locally_owned_dofs, locally_owned_dofs, dsp, MPI_COMM_WORLD);
+
+        system_rhs.reinit (locally_owned_dofs, MPI_COMM_WORLD);
+        locally_relevant_solution.reinit (locally_owned_dofs, locally_relevant_dofs,
+                                          MPI_COMM_WORLD);
+      }
     }
 
     template <int dim>
@@ -213,8 +246,6 @@ namespace aspect
       std::vector<double> phi_p (dofs_per_cell);
       std::vector<double> phi_h (dofs_per_cell);
       std::vector<double> phi_s (dofs_per_cell);
-
-
 
       std::vector<double> div_phi_u (dofs_per_cell);
 
@@ -321,164 +352,160 @@ namespace aspect
     CrustalFlow<dim>::
     refine_mesh()
     {
-      // parallel::distributed::SolutionTransfer<boundarydim,
-      //          TrilinosWrappers::MPI::Vector, DoFHandler<boundarydim,dim>>
-      //          solutionTx (dof_handler);
-      //
-      // {
-      //   Vector<float> estimated_error_per_cell (triangulation.n_active_cells ());
-      //   KellyErrorEstimator<boundarydim, dim>::estimate (dof_handler, QGauss<boundarydim-1> (3),
-      //                                                    typename FunctionMap<dim>::type (), locally_relevant_solution,
-      //                                                    estimated_error_per_cell,
-      //                                                    fe.component_mask(u_extractor) | fe.component_mask(p_extractor),
-      //                                                    nullptr, 0, triangulation.locally_owned_subdomain ());
-      //   parallel::distributed::GridRefinement::refine_and_coarsen_fixed_fraction (
-      //     triangulation, estimated_error_per_cell, 0.5, 0.3);
-      //
-      //   // Limit refinement to min/max levels
-      //   // if (triangulation.n_levels () > ( 5 ))
-      //   //   for (typename Triangulation<boundarydim, dim>::active_cell_iterator cell =
-      //   //          triangulation.begin_active ( 5 );
-      //   //        cell != triangulation.end (); ++cell)
-      //   //     cell->clear_refine_flag ();
-      //   // for (typename Triangulation<boundarydim, dim>::active_cell_iterator cell =
-      //   //        triangulation.begin_active ( 4 );
-      //   //      cell != triangulation.end_active ( 4 ); ++cell)
-      //   //   cell->clear_coarsen_flag ();
-      //
-      //   // Transfer solution onto new mesh
-      //   std::vector<const TrilinosWrappers::MPI::Vector *> solution (1);
-      //   solution[0] = &locally_relevant_solution;
-      //   triangulation.prepare_coarsening_and_refinement ();
-      //   solutionTx.prepare_for_coarsening_and_refinement (solution);
-      //
-      //   triangulation.execute_coarsening_and_refinement ();
-    // }
-    //
-    // setup_dofs ();
-    //
-    // {
-    //   TrilinosWrappers::MPI::Vector distributed_solution (system_rhs);
-    //   std::vector<TrilinosWrappers::MPI::Vector *> tmp (1);
-    //   tmp[0] = &(distributed_solution);
-    //   solutionTx.interpolate (tmp);
-    //   constraints.distribute (distributed_solution);
-    //   locally_relevant_solution = distributed_solution;
-    // }
-  }
+      parallel::distributed::SolutionTransfer<boundarydim,
+               TrilinosWrappers::MPI::Vector, DoFHandler<boundarydim,dim>>
+               solutionTx (dof_handler);
 
-  template <int dim>
-  void
-  CrustalFlow<dim>::
-  output_results (const unsigned int timestep,
-                  const double time)
-  {
-    const std::string output_directory = this->get_output_directory();
-
-    DataOut<boundarydim,DoFHandler<boundarydim,dim>> data_out;
-    data_out.attach_dof_handler (dof_handler);
-
-    std::vector<DataComponentInterpretation::DataComponentInterpretation>
-    data_component_interpretation(0);
-
-    for (unsigned int i=0; i<dim; ++i)
       {
-        data_component_interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
-      }
-    data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
-    data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
-    data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+        Vector<float> estimated_error_per_cell (triangulation.n_active_cells ());
+        KellyErrorEstimator<boundarydim, dim>::estimate (dof_handler, QGauss<boundarydim-1> (3),
+                                                         std::map<types::boundary_id, const Function<dim> *>(),
+                                                         locally_relevant_solution,
+                                                         estimated_error_per_cell,
+                                                         fe.component_mask(u_extractor) | fe.component_mask(p_extractor),
+                                                         nullptr, 0, triangulation.locally_owned_subdomain ());
+        GridRefinement::refine_and_coarsen_fixed_fraction (
+          triangulation, estimated_error_per_cell, 0.5, 0.3);
 
-    std::vector<std::string> solution_name(0);
-    for (unsigned int i=0; i<dim; ++i)
+        // Limit refinement to min/max levels
+        // if (triangulation.n_levels () > ( 5 ))
+        //   for (typename Triangulation<boundarydim, dim>::active_cell_iterator cell =
+        //          triangulation.begin_active ( 5 );
+        //        cell != triangulation.end (); ++cell)
+        //     cell->clear_refine_flag ();
+        // for (typename Triangulation<boundarydim, dim>::active_cell_iterator cell =
+        //        triangulation.begin_active ( 4 );
+        //      cell != triangulation.end_active ( 4 ); ++cell)
+        //   cell->clear_coarsen_flag ();
+
+        // Transfer solution onto new mesh
+        std::vector<const TrilinosWrappers::MPI::Vector *> solution (1);
+        solution[0] = &locally_relevant_solution;
+        triangulation.prepare_coarsening_and_refinement ();
+        solutionTx.prepare_for_coarsening_and_refinement (solution);
+
+        triangulation.execute_coarsening_and_refinement ();
+      }
+
+      setup_dofs ();
+
       {
-        solution_name.push_back("Velocity");
+        TrilinosWrappers::MPI::Vector distributed_solution (system_rhs);
+        std::vector<TrilinosWrappers::MPI::Vector *> tmp (1);
+        tmp[0] = &(distributed_solution);
+        solutionTx.interpolate (tmp);
+        constraints.distribute (distributed_solution);
+        locally_relevant_solution = distributed_solution;
       }
-    solution_name.push_back ("Pressure");
-    solution_name.push_back ("Crustal_Thickness");
-    solution_name.push_back ("Sill_Thickness");
+    }
 
-    data_out.add_data_vector (locally_relevant_solution, solution_name,
-                              DataOut<boundarydim,DoFHandler<boundarydim,dim>>::type_dof_data,
-                              data_component_interpretation);
+    template <int dim>
+    void
+    CrustalFlow<dim>::
+    output_results (const unsigned int timestep,
+                    const double time)
+    {
+      const std::string output_directory = this->get_output_directory();
+      const std::string vis_directory = output_directory + "/crustal_flow";
 
-    data_out.build_patches ();
-    std::ofstream output (
-      (output_directory + "/crustal_flow-" + Utilities::int_to_string (timestep, 5) + "."
-       + Utilities::int_to_string (triangulation.locally_owned_subdomain (), 4)
-       + ".vtu").c_str ());
-    data_out.write_vtu (output);
-    if (Utilities::MPI::this_mpi_process (MPI_COMM_WORLD) == 0)
-      {
-        std::vector<std::string> filenames;
-        for (unsigned int i = 0;
-             i < Utilities::MPI::n_mpi_processes (MPI_COMM_WORLD);
-             ++i)
-          {
-            filenames.push_back ("crustal_flow-"
-                                 + Utilities::int_to_string (timestep, 5) + "."
-                                 + Utilities::int_to_string (i, 4) + ".vtu");
-          }
+      DataOut<boundarydim,DoFHandler<boundarydim,dim>> data_out;
+      data_out.attach_dof_handler (dof_handler);
 
-        const std::string pvtu_master_filename =
-          output_directory + "/crustal_flow-"
-          + Utilities::int_to_string (timestep, 4) + ".pvtu";
-        std::ofstream pvtu_master (pvtu_master_filename);
-        data_out.write_pvtu_record (pvtu_master, filenames);
-
-        static std::vector<std::pair<double, std::string>> times_and_names;
-        times_and_names.push_back (std::pair<double, std::string> (time, pvtu_master_filename));
-        std::ofstream pvd_output ("crustal_flow.pvd");
-        DataOutBase::write_pvd_record (pvd_output, times_and_names);
-        std::ofstream pvd_output2 (output_directory+".pvd");
-        DataOutBase::write_pvd_record (pvd_output2, times_and_names);
-      }
-  }
-
-  template <int dim>
-  double
-  CrustalFlow<dim>::
-  get_dt()
-  {
-    const unsigned int velocity_degree = 2;
-    const QIterated<boundarydim> quadrature_formula (QTrapez<1> (), velocity_degree);
-    const unsigned int n_q_points = quadrature_formula.size ();
-    FEValues<boundarydim,dim> fe_values (fe, quadrature_formula, update_values);
-    std::vector<Tensor<1, dim> > velocity_values (n_q_points);
-    double max_local_cfl = 0;
-
-    typename DoFHandler<boundarydim,dim>::active_cell_iterator cell =
-      dof_handler.begin_active (), endc = dof_handler.end ();
-    for (; cell != endc; ++cell)
-      if (cell->is_locally_owned ())
+      std::vector<DataComponentInterpretation::DataComponentInterpretation> data_component_interpretation(0);
+      std::vector<std::string> solution_name(0);
+      for (unsigned int i=0; i<boundarydim; ++i)
         {
-          fe_values.reinit (cell);
-          fe_values[u_extractor].get_function_values (locally_relevant_solution,
-                                                      velocity_values);
-          double max_local_velocity = 1e-10;
-          for (unsigned int q = 0; q < n_q_points; ++q)
-            {
-              max_local_velocity = std::max (max_local_velocity,
-                                             velocity_values[q].norm ());
-            }
-          max_local_cfl = std::max (max_local_cfl,
-                                    max_local_velocity / cell->diameter ());
+          // data_component_interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+          data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+          solution_name.push_back("Velocity_"+Utilities::int_to_string(i));
         }
-    const double CFL = Utilities::MPI::max (max_local_cfl, MPI_COMM_WORLD);
+      data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+      data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+      data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
 
-    const double MAX_DT = 1.0;
-    return std::min (MAX_DT, 0.1 / CFL);
+      solution_name.push_back ("Pressure");
+      solution_name.push_back ("Crustal_Thickness");
+      solution_name.push_back ("Sill_Thickness");
+
+      data_out.add_data_vector (locally_relevant_solution, solution_name,
+                                DataOut<boundarydim,DoFHandler<boundarydim,dim>>::type_dof_data,
+                                data_component_interpretation);
+
+      data_out.build_patches ();
+      std::ofstream output (
+        (vis_directory + "/crustal_flow-"
+         + Utilities::int_to_string (timestep, 5) + "."
+         + Utilities::int_to_string (triangulation.locally_owned_subdomain (), 4)
+         + ".vtu").c_str ());
+      data_out.write_vtu (output);
+      if (Utilities::MPI::this_mpi_process(this->get_mpi_communicator()) == 0)
+        {
+          std::vector<std::string> filenames;
+          for (unsigned int i = 0;
+               i < Utilities::MPI::n_mpi_processes (MPI_COMM_WORLD);
+               ++i)
+            {
+              filenames.push_back ("crustal_flow-"
+                                   + Utilities::int_to_string (timestep, 5) + "."
+                                   + Utilities::int_to_string (i, 4) + ".vtu");
+            }
+
+          const std::string pvtu_master_filename =
+            "crustal_flow/crustal_flow-"
+            + Utilities::int_to_string (timestep, 4) + ".pvtu";
+          std::ofstream pvtu_master (output_directory + "/" + pvtu_master_filename);
+          data_out.write_pvtu_record (pvtu_master, filenames);
+
+          static std::vector<std::pair<double, std::string>> times_and_names;
+          times_and_names.push_back (std::pair<double, std::string> (time, pvtu_master_filename));
+          std::ofstream pvd_output (output_directory + "/crustal_flow.pvd");
+          DataOutBase::write_pvd_record (pvd_output, times_and_names);
+        }
+    }
+
+    template <int dim>
+    double
+    CrustalFlow<dim>::
+    get_dt(const double max_dt)
+    {
+      const unsigned int velocity_degree = 2;
+      const QIterated<boundarydim> quadrature_formula (QTrapez<1> (), velocity_degree);
+      const unsigned int n_q_points = quadrature_formula.size ();
+      FEValues<boundarydim,dim> fe_values (fe, quadrature_formula, update_values);
+      std::vector<Tensor<1, dim> > velocity_values (n_q_points);
+      double max_local_cfl = 0;
+
+      typename DoFHandler<boundarydim,dim>::active_cell_iterator cell =
+        dof_handler.begin_active (), endc = dof_handler.end ();
+      for (; cell != endc; ++cell)
+        if (cell->is_locally_owned ())
+          {
+            fe_values.reinit (cell);
+            fe_values[u_extractor].get_function_values (locally_relevant_solution,
+                                                        velocity_values);
+            double max_local_velocity = 1e-10;
+            for (unsigned int q = 0; q < n_q_points; ++q)
+              {
+                max_local_velocity = std::max (max_local_velocity,
+                                               velocity_values[q].norm ());
+              }
+            max_local_cfl = std::max (max_local_cfl,
+                                      max_local_velocity / cell->diameter ());
+          }
+      const double CFL = Utilities::MPI::max (max_local_cfl, MPI_COMM_WORLD);
+
+      return std::min (max_dt, 0.1 / CFL);
+    }
   }
-}
 }
 
 // explicit instantiations
 namespace aspect
 {
-  namespace BoundaryTraction
+  namespace Postprocess
   {
-    ASPECT_REGISTER_BOUNDARY_TRACTION_MODEL(CrustalFlow, "Crustal flow",
-                                            "Implementation of a model in which the boundary "
-                                            "traction is given in terms of ")
+    ASPECT_REGISTER_POSTPROCESSOR(CrustalFlow, "crustal flow",
+                                  "Implementation of a model in which the boundary "
+                                  "traction is given in terms of ")
   }
 }

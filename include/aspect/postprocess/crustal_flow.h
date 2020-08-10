@@ -50,6 +50,7 @@
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_system.h>
+#include <deal.II/grid/grid_refinement.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/data_out.h>
@@ -59,6 +60,7 @@
 #include <deal.II/distributed/tria.h>
 #include <deal.II/distributed/grid_refinement.h>
 #include <deal.II/distributed/solution_transfer.h>
+#include <deal.II/distributed/shared_tria.h>
 
 #include <cmath>
 #include <fstream>
@@ -72,13 +74,13 @@
 #include <boost/iostreams/tee.hpp>
 #include <boost/iostreams/stream.hpp>
 
-#include <aspect/boundary_traction/interface.h>
+#include <aspect/postprocess/interface.h>
 #include <aspect/simulator_access.h>
 #include <aspect/utilities.h>
 
 namespace aspect
 {
-  namespace BoundaryTraction
+  namespace Postprocess
   {
     using namespace dealii;
 
@@ -121,10 +123,15 @@ namespace aspect
          * (outward) normal vector to the domain is also provided as
          * a second argument.
          */
-        Tensor<1,dim>
-        boundary_traction (const types::boundary_id boundary_indicator,
-                           const Point<dim> &p,
-                           const Tensor<1,dim> &normal) const override;
+        std::pair<std::string,std::string>
+        execute (TableHandler &statistics) override;
+        // Tensor<1,dim>
+        // boundary_traction (const types::boundary_id boundary_indicator,
+        //                    const Point<dim> &p,
+        //                    const Tensor<1,dim> &normal) const override;
+
+        // void save (std::map<std::string, std::string> &status_strings) const override;
+        // void load (const std::map<std::string, std::string> &status_strings) override;
 
       private:
         static constexpr unsigned int boundarydim = dim - 1;
@@ -152,7 +159,7 @@ namespace aspect
         void refine_mesh ();
         void output_results (const unsigned int timestep,
                              const double time);
-        double get_dt ();
+        double get_dt (const double max_dt);
 
         double RHO_C=2650;
         double RHO_M=3300;
