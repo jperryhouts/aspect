@@ -170,18 +170,21 @@ namespace aspect
 
         const FEValuesExtractors::Scalar w_extractor;
 
+        // Flow equation methods
         void setup_flow_dofs ();
         void assemble_flow_system (const double dt);
         void solve_flow ();
+        double get_dt (const double max_dt);
 
+        // Flexure equation methods
         void setup_flexure_dofs ();
         void assemble_flexure_system ();
         void solve_flexure ();
 
+        // Joint system methods: operate on shared mesh and/or both FE solutions
         void refine_mesh ();
         void output_results (const unsigned int timestep,
                              const double time);
-        double get_dt (const double max_dt);
 
         double RHO_C=2650;
         double RHO_M=3300;

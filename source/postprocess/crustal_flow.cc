@@ -296,8 +296,8 @@ namespace aspect
     {
       const QGauss<dim> quadrature_formula (1);
       FEValues<dim,spacedim> flexure_fe_values (flexure_fe, quadrature_formula,
-                                           update_values | update_JxW_values
-                                           | update_hessians
+                                           update_values | update_hessians
+                                           | update_JxW_values
                                            | update_quadrature_points);
      FEValues<dim,spacedim> flow_fe_values (flow_fe, quadrature_formula,
                                             update_values);
