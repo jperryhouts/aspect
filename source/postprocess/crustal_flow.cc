@@ -32,8 +32,8 @@ namespace aspect
       :
       triangulation (MPI_COMM_WORLD,
                      typename Triangulation<dim, spacedim>::MeshSmoothing (
-                       Triangulation<dim, spacedim>::smoothing_on_refinement | Triangulation<dim, spacedim>::smoothing_on_coarsening)),
-  /*parallel::distributed::Triangulation<dim, spacedim>::mesh_reconstruction_after_repartitioning),*/
+                       Triangulation<dim, spacedim>::smoothing_on_refinement | Triangulation<dim, spacedim>::smoothing_on_coarsening),
+                       parallel::distributed::Triangulation<dim, spacedim>::mesh_reconstruction_after_repartitioning),
       flow_dof_handler (triangulation),
       flow_fe (FE_Q<dim, spacedim> (2), dim /* Crustal flow velocity */,
           FE_Q<dim, spacedim> (1), 1 /* P -- Crustal thickness */,
@@ -42,13 +42,17 @@ namespace aspect
       u_extractor (0),
       p_extractor (dim),
       h_extractor (dim+1),
-      s_extractor (dim+2)
+      s_extractor (dim+2),
+      flexure_dof_handler (triangulation),
+      flexure_fe (FE_Q<dim, spacedim> (2), 1),
+      w_extractor (0)
     {}
 
     template <int spacedim>
     CrustalFlow<spacedim>::~CrustalFlow ()
     {
       flow_dof_handler.clear ();
+      flexure_dof_handler.clear ();
     }
 
     template <int spacedim>
@@ -73,13 +77,17 @@ namespace aspect
         //                                      triangulation,
         //                                      boundary_ids);
 
-        setup_flow_dofs();
+        setup_flow_dofs ();
+        setup_flexure_dofs ();
 
         for (unsigned int i=0; i<2; ++i)
         {
-          assemble_flow_system(0);
-          solve_flow();
-          refine_mesh();
+          assemble_flexure_system ();
+          solve_flexure ();
+
+          assemble_flow_system (0);
+          solve_flow ();
+          refine_mesh ();
         }
       }
     }
@@ -102,14 +110,21 @@ namespace aspect
     execute (TableHandler &)
     {
       double geodynamic_timestep = this->get_timestep();
-      double dt;
+      double dt = 0;
       int crustal_flow_timestep = 0;
       double crustal_flow_time = 0;
       do
         {
-          dt = get_dt(geodynamic_timestep-crustal_flow_time);
-          assemble_flow_system(dt);
-          solve_flow();
+          // This might only work after solve_flow() has happened at least
+          // once. Which it has been, if there is any initial refinement.
+          dt = get_dt (geodynamic_timestep-crustal_flow_time);
+
+          assemble_flexure_system ();
+          solve_flexure ();
+
+          assemble_flow_system (dt);
+          solve_flow ();
+
           crustal_flow_time += dt;
           crustal_flow_timestep += 1;
         }
@@ -121,6 +136,54 @@ namespace aspect
 
       return std::make_pair (std::string ("Crustal flow timesteps"),
                              Utilities::int_to_string(crustal_flow_timestep));
+    }
+
+    template <int spacedim>
+    void
+    CrustalFlow<spacedim>::
+    setup_flexure_dofs ()
+    {
+      flexure_dof_handler.distribute_dofs (flexure_fe);
+      {
+        locally_owned_flexure_dofs = flexure_dof_handler.locally_owned_dofs ();
+        DoFTools::extract_locally_relevant_dofs (flexure_dof_handler,
+                    locally_relevant_flexure_dofs);
+      }
+
+      {
+        flexure_constraints.clear ();
+        flexure_constraints.reinit (locally_relevant_flexure_dofs);
+        DoFTools::make_hanging_node_constraints (flexure_dof_handler,
+          flexure_constraints);
+        VectorTools::interpolate_boundary_values (flexure_dof_handler, 0,
+                                                  Functions::ZeroFunction<spacedim>(1),
+                                                  flexure_constraints,
+                                                  flexure_fe.component_mask (w_extractor));
+        flexure_constraints.close ();
+      }
+
+      {
+        TrilinosWrappers::SparsityPattern dsp(locally_owned_flexure_dofs,
+                                              locally_owned_flexure_dofs,
+                                              locally_relevant_flexure_dofs,
+                                              MPI_COMM_WORLD);
+        DoFTools::make_sparsity_pattern(flexure_dof_handler,dsp,flexure_constraints);
+        dsp.compress();
+        flexure_matrix.reinit(dsp);
+
+        // DynamicSparsityPattern dsp (locally_relevant_flow_dofs);
+        // DoFTools::make_sparsity_pattern (flow_dof_handler, dsp, flow_constraints, false);
+        // SparsityTools::distribute_sparsity_pattern (dsp,
+        //                                             flow_dof_handler.n_locally_owned_dofs_per_processor (),
+        //                                             MPI_COMM_WORLD,
+        //                                             locally_relevant_flow_dofs);
+        // flow_matrix.reinit (locally_owned_flow_dofs, locally_owned_flow_dofs, dsp, MPI_COMM_WORLD);
+
+        flexure_rhs.reinit (locally_owned_flexure_dofs, MPI_COMM_WORLD);
+        locally_relevant_flexure_solution.reinit (locally_owned_flexure_dofs,
+                                                  locally_relevant_flexure_dofs,
+                                                  MPI_COMM_WORLD);
+      }
     }
 
     template <int spacedim>
@@ -229,6 +292,78 @@ namespace aspect
     template <int spacedim>
     void
     CrustalFlow<spacedim>::
+    assemble_flexure_system ()
+    {
+      const QGauss<dim> quadrature_formula (1);
+      FEValues<dim,spacedim> flexure_fe_values (flexure_fe, quadrature_formula,
+                                           update_values | update_JxW_values
+                                           | update_hessians
+                                           | update_quadrature_points);
+     FEValues<dim,spacedim> flow_fe_values (flow_fe, quadrature_formula,
+                                            update_values);
+      const unsigned int dofs_per_cell = flexure_fe.dofs_per_cell;
+      const unsigned int n_q_points = quadrature_formula.size ();
+      FullMatrix<double> cell_matrix (dofs_per_cell, dofs_per_cell);
+      Vector<double> cell_rhs (dofs_per_cell);
+      std::vector<types::global_dof_index> local_dof_indices (dofs_per_cell);
+
+      std::vector<double> phi_w (dofs_per_cell);
+      std::vector<Tensor<2,spacedim> > hessian_phi_w (dofs_per_cell);
+      std::vector<double> latest_h_values (n_q_points);
+      std::vector<double> latest_s_values (n_q_points);
+
+      typename DoFHandler<dim,spacedim>::active_cell_iterator cell =
+        flexure_dof_handler.begin_active (), endc = flexure_dof_handler.end ();
+      for (; cell != endc; ++cell)
+        {
+          if (cell->is_locally_owned ())
+            {
+              cell_matrix = 0;
+              cell_rhs = 0;
+              flexure_fe_values.reinit (cell);
+              flow_fe_values.reinit (cell);
+
+              flow_fe_values[h_extractor].get_function_values (
+                locally_relevant_flow_solution, latest_h_values);
+              flow_fe_values[s_extractor].get_function_values (
+                locally_relevant_flow_solution, latest_s_values);
+
+              for (unsigned int q = 0; q < n_q_points; ++q)
+                {
+                  //Point<spacedim> loc = flexure_fe_values.quadrature_point (q);
+                  for (unsigned int k = 0; k < dofs_per_cell; ++k)
+                    {
+                      phi_w[k] = flexure_fe_values[w_extractor].value (k,q);
+                      hessian_phi_w[k] = flexure_fe_values[w_extractor].hessian (k,q);
+                    }
+
+                  for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                    {
+                      // const Tensor<2,spacedim> hessian_i =
+                      //   flexure_fe_values.shape_hessian(i, q);
+                      for (unsigned int j = 0; j < dofs_per_cell; ++j)
+                        {
+                          // const Tensor<2,spacedim> hessian_i =
+                          //   flexure_fe_values.shape_hessian(j, q);
+                          cell_matrix (i, j) += (
+                            //RIGIDITY * scalar_product(hessian_i, hessian_j)
+                            RIGIDITY * scalar_product(hessian_phi_w[i],
+                                                      hessian_phi_w[j])
+                          ) * flexure_fe_values.JxW (q);
+                        }
+
+                      cell_rhs (i) += (
+                        phi_w[i] * 1.0
+                      ) * flexure_fe_values.JxW (q);
+                    }
+                }
+            }
+        }
+    }
+
+    template <int spacedim>
+    void
+    CrustalFlow<spacedim>::
     assemble_flow_system(const double dt)
     {
       const QGauss<dim> quadrature_formula (5);
@@ -319,6 +454,37 @@ namespace aspect
     template <int spacedim>
     void
     CrustalFlow<spacedim>::
+    solve_flexure ()
+    {
+      dealii::LinearAlgebraTrilinos::MPI::Vector distributed_solution (
+        locally_owned_flexure_dofs, MPI_COMM_WORLD);
+
+      SolverControl cn;
+      TrilinosWrappers::SolverDirect solver (cn);
+      try
+        {
+          solver.solve (flexure_matrix, distributed_solution, flexure_rhs);
+          flexure_constraints.distribute (distributed_solution);
+          locally_relevant_flexure_solution = distributed_solution;
+        }
+      catch (const std::exception &exc)
+        {
+          if (Utilities::MPI::this_mpi_process (MPI_COMM_WORLD) == 0)
+            {
+              AssertThrow(false, ExcMessage (
+                            std::string ("The flexure solver failed with error:\n\n")
+                            + exc.what ()));
+            }
+          else
+            {
+              throw QuietException ();
+            }
+        }
+    }
+
+    template <int spacedim>
+    void
+    CrustalFlow<spacedim>::
     solve_flow()
     {
       dealii::LinearAlgebraTrilinos::MPI::Vector distributed_solution (
@@ -337,7 +503,7 @@ namespace aspect
           if (Utilities::MPI::this_mpi_process (MPI_COMM_WORLD) == 0)
             {
               AssertThrow(false, ExcMessage (
-                            std::string ("The direct Stokes solver failed with error:\n\n")
+                            std::string ("The flow solver failed with error:\n\n")
                             + exc.what ()));
             }
           else
@@ -408,8 +574,83 @@ namespace aspect
       const std::string output_directory = this->get_output_directory();
       const std::string vis_directory = output_directory + "/crustal_flow";
 
+      // Because the problem is split into two semi-independent finite element
+      // spaces, we need to make it possible to extract solution values from
+      // both. First we will combine the two finite element systems into one
+      // joint system.
+      const FESystem<dim, spacedim> joint_fe (flow_fe, 1, flexure_fe, 1);
+      DoFHandler<dim, spacedim> joint_dof_handler (triangulation);
+      joint_dof_handler.distribute_dofs(joint_fe);
+      Assert(joint_dof_handler.n_dofs() ==
+              flow_dof_handler.n_dofs() + flexure_dof_handler.n_dofs(),
+            ExcInternalError());
+
+      IndexSet locally_relevant_joint_dofs(joint_dof_handler.n_dofs());
+      DoFTools::extract_locally_relevant_dofs(joint_dof_handler,
+                                              locally_relevant_joint_dofs);
+      TrilinosWrappers::MPI::Vector locally_relevant_joint_solution;
+      locally_relevant_joint_solution.reinit(locally_relevant_joint_dofs,
+                                             MPI_COMM_WORLD);
+
+      TrilinosWrappers::MPI::Vector joint_solution;
+      joint_solution.reinit(joint_dof_handler.locally_owned_dofs(),
+                            MPI_COMM_WORLD);
+
+      {
+        std::vector<types::global_dof_index> local_joint_dof_indices(
+          joint_fe.dofs_per_cell);
+        std::vector<types::global_dof_index> local_flow_dof_indices(
+          flow_fe.dofs_per_cell);
+        std::vector<types::global_dof_index> local_flexure_dof_indices(
+          flexure_fe.dofs_per_cell);
+
+        typename DoFHandler<dim, spacedim>::active_cell_iterator
+        joint_cell = joint_dof_handler.begin_active(),
+        joint_endc = joint_dof_handler.end(),
+        flow_cell = flow_dof_handler.begin_active(),
+        flexure_cell = flexure_dof_handler.begin_active();
+
+        for (; joint_cell != joint_endc;
+              ++joint_cell, ++flow_cell, ++flexure_cell)
+        {
+          if (joint_cell->is_locally_owned())
+          {
+            joint_cell->get_dof_indices(local_joint_dof_indices);
+            flow_cell->get_dof_indices(local_flow_dof_indices);
+            flexure_cell->get_dof_indices(local_flexure_dof_indices);
+
+            for (unsigned int i=0; i < joint_fe.dofs_per_cell; ++i)
+            {
+              if (joint_fe.system_to_base_index(i).first.first == 0)
+              {
+                Assert(joint_fe.system_to_base_index(i).second <
+                         local_flow_dof_indices.size(),
+                       ExcInternalError());
+                locally_relevant_joint_solution(local_joint_dof_indices[i]) =
+                  locally_relevant_flow_solution(
+                    local_flow_dof_indices
+                      [joint_fe.system_to_base_index(i).second]);
+              }
+              else
+              {
+                Assert(joint_fe.system_to_base_index(i).first.first == 1,
+                       ExcInternalError());
+                Assert(joint_fe.system_to_base_index(i).second <
+                         local_flexure_dof_indices.size(),
+                       ExcInternalError());
+                locally_relevant_joint_solution(local_joint_dof_indices[i]) =
+                  locally_relevant_flexure_solution(
+                    local_flexure_dof_indices
+                      [joint_fe.system_to_base_index(i).second]);
+              }
+            }
+          }
+        }
+      }
+
+      // Now proceed with data output using the joint solution space.
       DataOut<dim,DoFHandler<dim,spacedim>> data_out;
-      data_out.attach_dof_handler (flow_dof_handler);
+      data_out.attach_dof_handler (joint_dof_handler);
 
       std::vector<DataComponentInterpretation::DataComponentInterpretation> data_component_interpretation(0);
       std::vector<std::string> solution_name(0);
@@ -422,12 +663,14 @@ namespace aspect
       data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
       data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
       data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+      data_component_interpretation.push_back(DataComponentInterpretation::component_is_scalar);
 
       solution_name.push_back ("Pressure");
       solution_name.push_back ("Crustal_Thickness");
       solution_name.push_back ("Sill_Thickness");
+      solution_name.push_back ("Flexure");
 
-      data_out.add_data_vector (locally_relevant_flow_solution, solution_name,
+      data_out.add_data_vector (locally_relevant_joint_solution, solution_name,
                                 DataOut<dim,DoFHandler<dim,spacedim>>::type_dof_data,
                                 data_component_interpretation);
 

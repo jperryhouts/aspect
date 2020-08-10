@@ -137,44 +137,46 @@ namespace aspect
         static constexpr unsigned int dim = spacedim - 1;
         parallel::distributed::Triangulation<dim, spacedim> triangulation;
 
+        // Crustal flow system
         DoFHandler<dim, spacedim> flow_dof_handler;
         FESystem<dim, spacedim> flow_fe;
         AffineConstraints<double> flow_constraints;
 
-        // DofHandler<dim, spacedim> flexure_dof_handler;
-        // FESystem<dim, spacedim> flexure_fe;
-        // AffineConstraints<double> flexure_constraints;
-
         IndexSet locally_owned_flow_dofs;
         IndexSet locally_relevant_flow_dofs;
-
-        // IndexSet locally_owned_flexure_dofs;
-        // IndexSet locally_relevant_flexure_dofs;
 
         dealii::LinearAlgebraTrilinos::MPI::SparseMatrix flow_matrix;
         dealii::LinearAlgebraTrilinos::MPI::Vector locally_relevant_flow_solution;
         dealii::LinearAlgebraTrilinos::MPI::Vector old_locally_relevant_flow_solution;
         dealii::LinearAlgebraTrilinos::MPI::Vector flow_rhs;
 
-        // dealii::LinearAlgebraTrilinos::MPI::SparseMatrix flexure_matrix;
-        // dealii::LinearAlgebraTrilinos::MPI::Vector locally_relevant_flexure_solution;
-        // dealii::LinearAlgebraTrilinos::MPI::Vector old_locally_relevant_flexure_solution;
-        // dealii::LinearAlgebraTrilinos::MPI::Vector flexure_rhs;
-
         const FEValuesExtractors::Vector u_extractor;
         const FEValuesExtractors::Scalar p_extractor;
         const FEValuesExtractors::Scalar h_extractor;
         const FEValuesExtractors::Scalar s_extractor;
 
-        // const FEValuesExtractors::Scalar w_extractor;
+        // Plate flexure system
+        DoFHandler<dim, spacedim> flexure_dof_handler;
+        FESystem<dim, spacedim> flexure_fe;
+        AffineConstraints<double> flexure_constraints;
+
+        IndexSet locally_owned_flexure_dofs;
+        IndexSet locally_relevant_flexure_dofs;
+
+        dealii::LinearAlgebraTrilinos::MPI::SparseMatrix flexure_matrix;
+        dealii::LinearAlgebraTrilinos::MPI::Vector locally_relevant_flexure_solution;
+        dealii::LinearAlgebraTrilinos::MPI::Vector old_locally_relevant_flexure_solution;
+        dealii::LinearAlgebraTrilinos::MPI::Vector flexure_rhs;
+
+        const FEValuesExtractors::Scalar w_extractor;
 
         void setup_flow_dofs ();
         void assemble_flow_system (const double dt);
         void solve_flow ();
 
-        // void setup_flexure_dofs ();
-        // void assemble_flexure_system (const double dt);
-        // void solve_flexure ();
+        void setup_flexure_dofs ();
+        void assemble_flexure_system ();
+        void solve_flexure ();
 
         void refine_mesh ();
         void output_results (const unsigned int timestep,
@@ -184,6 +186,8 @@ namespace aspect
         double RHO_C=2650;
         double RHO_M=3300;
         double RHO_S=3550;
+        double E=1e7, Te=5e3, nu=0.25;
+        double RIGIDITY=(12 * (E * std::pow(Te, 3)) / (12 * (1.0 - nu*nu)));
 
         types::boundary_id surface_boundary_id;
 
