@@ -56,7 +56,9 @@ namespace aspect
        */
       bool plastic_yielding = false;
 
-      MaterialModel::MaterialModelInputs <dim> in (1 /*n_evaluation_points*/, this->n_compositional_fields());
+      MaterialModel::MaterialModelInputs <dim> in (in.n_evaluation_points(), this->n_compositional_fields());
+      MaterialModel::MaterialModelOutputs <dim> out (out.n_evaluation_points(), this->n_compositional_fields());
+
       unsigned int i = 0;
 
       in.pressure[i] = pressure;
@@ -67,7 +69,7 @@ namespace aspect
       const std::vector<double> volume_fractions = MaterialUtilities::compute_volume_fractions(composition, get_volumetric_composition_mask());
 
       const std::pair<std::vector<double>, std::vector<bool> > calculate_viscosities =
-        calculate_isostrain_viscosities(in, i, volume_fractions, viscous_flow_law, yield_mechanism);
+        calculate_isostrain_viscosities(in, out, i, volume_fractions, viscous_flow_law, yield_mechanism);
 
       std::vector<double>::const_iterator max_composition = std::max_element(volume_fractions.begin(),volume_fractions.end());
       plastic_yielding = calculate_viscosities.second[std::distance(volume_fractions.begin(),max_composition)];
@@ -124,9 +126,10 @@ namespace aspect
       /* The following returns whether or not the material is plastically yielding
        * as documented in evaluate.
        */
+      MaterialModel::MaterialModelOutputs <dim> out (out.n_evaluation_points(), this->n_compositional_fields());
 
       const std::pair<std::vector<double>, std::vector<bool>> calculate_viscosities =
-                                                             calculate_isostrain_viscosities(in, 0, volume_fractions, viscous_flow_law,
+                                                             calculate_isostrain_viscosities(in, out, 0, volume_fractions, viscous_flow_law,
                                                                  yield_mechanism, phase_function_values);
 
       std::vector<double>::const_iterator max_composition = std::max_element(volume_fractions.begin(), volume_fractions.end());
@@ -175,6 +178,7 @@ namespace aspect
     std::pair<std::vector<double>, std::vector<bool> >
     ViscoPlastic<dim>::
     calculate_isostrain_viscosities (const MaterialModel::MaterialModelInputs<dim> &in,
+                                     MaterialModel::MaterialModelOutputs<dim> &out,
                                      const unsigned int i,
                                      const std::vector<double> &volume_fractions,
                                      const ViscosityScheme &viscous_type,
@@ -193,18 +197,37 @@ namespace aspect
             stress_old[SymmetricTensor<2,dim>::unrolled_to_component_indices(j)] = in.composition[i][j];
         }
 
+      // A new material model inputs variable that uses the diffused strain rate.
+      MaterialModel::MaterialModelInputs<dim> in_diffused = in;
+
+      for (unsigned int j=0; j < SymmetricTensor<2,dim>::n_independent_components; ++j)
+        {
+          // set up variable to interpolate prescribed field outputs onto composition field
+          PrescribedFieldOutputs<dim> *prescribed_field_out = out.template get_additional_output<PrescribedFieldOutputs<dim> >();
+
+          // fill the diffused output if diffusion is enabled
+          if (prescribed_field_out != nullptr && enable_diffusion)
+            {
+              // TODO: do not hard code the compositional variable here
+              prescribed_field_out->prescribed_field_outputs[i][6+ j] = in.strain_rate[i][
+                                                                          SymmetricTensor<2,dim>::unrolled_to_component_indices(j)];
+              in_diffused.strain_rate[i][SymmetricTensor<2,dim>::unrolled_to_component_indices(j)] =
+                prescribed_field_out->prescribed_field_outputs[i][6+ j];
+            }
+        }
+
       // The first time this function is called (first iteration of first time step)
       // a specified "reference" strain rate is used as the returned value would
       // otherwise be zero.
       const bool use_reference_strainrate = (this->get_timestep_number() == 0) &&
-                                            (in.strain_rate[i].norm() <= std::numeric_limits<double>::min());
+                                            (in_diffused.strain_rate[i].norm() <= std::numeric_limits<double>::min());
 
       double edot_ii;
       if (use_reference_strainrate)
         edot_ii = ref_strain_rate;
       else
         // Calculate the square root of the second moment invariant for the deviatoric strain rate tensor.
-        edot_ii = std::max(std::sqrt(std::fabs(second_invariant(deviator(in.strain_rate[i])))),
+        edot_ii = std::max(std::sqrt(std::fabs(second_invariant(deviator(in_diffused.strain_rate[i])))),
                            min_strain_rate);
 
       // Calculate viscosities for each of the individual compositional phases
@@ -291,7 +314,7 @@ namespace aspect
                 current_edot_ii = ref_strain_rate;
               else
                 {
-                  const double viscoelastic_strain_rate_invariant = elastic_rheology.calculate_viscoelastic_strain_rate(in.strain_rate[i],
+                  const double viscoelastic_strain_rate_invariant = elastic_rheology.calculate_viscoelastic_strain_rate(in_diffused.strain_rate[i],
                                                                     stress_old,
                                                                     elastic_shear_moduli[j]);
 
@@ -440,7 +463,7 @@ namespace aspect
               in_derivatives.strain_rate[i] = strain_rate_difference;
 
               std::vector<double> eta_component =
-                calculate_isostrain_viscosities(in_derivatives, i, volume_fractions,
+                calculate_isostrain_viscosities(in_derivatives, out, i, volume_fractions,
                                                 viscous_flow_law, yield_mechanism,
                                                 phase_function_values).first;
 
@@ -470,7 +493,7 @@ namespace aspect
           in_derivatives.strain_rate[i] = in.strain_rate[i];
 
           const std::vector<double> viscosity_difference =
-            calculate_isostrain_viscosities(in_derivatives, i, volume_fractions,
+            calculate_isostrain_viscosities(in_derivatives, out, i, volume_fractions,
                                             viscous_flow_law, yield_mechanism,
                                             phase_function_values).first;
 
@@ -634,7 +657,7 @@ namespace aspect
               // TODO: This is only consistent with viscosity averaging if the arithmetic averaging
               // scheme is chosen. It would be useful to have a function to calculate isostress viscosities.
               const std::pair<std::vector<double>, std::vector<bool> > calculate_viscosities =
-                calculate_isostrain_viscosities(in, i, volume_fractions, viscous_flow_law,
+                calculate_isostrain_viscosities(in, out, i, volume_fractions, viscous_flow_law,
                                                 yield_mechanism, phase_function_values);
 
               // The isostrain condition implies that the viscosity averaging should be arithmetic (see above).
@@ -653,7 +676,7 @@ namespace aspect
               // Compute viscosity derivatives if they are requested
               if (MaterialModel::MaterialModelDerivatives<dim> *derivatives =
                     out.template get_additional_output<MaterialModel::MaterialModelDerivatives<dim> >())
-                compute_viscosity_derivatives(i, volume_fractions, calculate_viscosities.first, in, out, phase_function_values);
+                compute_viscosity_derivatives(i,volume_fractions, calculate_viscosities.first, in, out, phase_function_values);
             }
 
           // Now compute changes in the compositional fields (i.e. the accumulated strain).
@@ -841,6 +864,10 @@ namespace aspect
           prm.declare_entry ("Include viscoelasticity", "false",
                              Patterns::Bool (),
                              "Whether to include elastic effects in the rheological formulation.");
+
+          prm.declare_entry ("Use diffusion", "false",
+                             Patterns::Bool (),
+                             "Whether to include diffusion effects in the strain rate or strains.");
         }
         prm.leave_subsection();
       }
@@ -881,6 +908,7 @@ namespace aspect
           strain_rheology.parse_parameters(prm);
 
           use_elasticity = prm.get_bool ("Include viscoelasticity");
+          enable_diffusion = prm.get_bool("Use diffusion");
 
           if (use_elasticity)
             {
@@ -1003,6 +1031,12 @@ namespace aspect
           const unsigned int n_points = out.n_evaluation_points();
           out.additional_outputs.push_back(
             std_cxx14::make_unique<MaterialModel::PlasticAdditionalOutputs<dim>> (n_points));
+        }
+      if (out.template get_additional_output<PrescribedFieldOutputs<dim> >() == nullptr)
+        {
+          const unsigned int n_points = out.n_evaluation_points();
+          out.additional_outputs.push_back(
+            std_cxx14::make_unique<MaterialModel::PrescribedFieldOutputs<dim>> (n_points, this->n_compositional_fields()));
         }
       if (use_elasticity)
         elastic_rheology.create_elastic_outputs(out);

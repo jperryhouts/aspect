@@ -326,6 +326,7 @@ namespace aspect
          */
         std::pair<std::vector<double>, std::vector<bool> >
         calculate_isostrain_viscosities ( const MaterialModel::MaterialModelInputs<dim> &in,
+                                          MaterialModel::MaterialModelOutputs<dim> &out,
                                           const unsigned int i,
                                           const std::vector<double> &volume_fractions,
                                           const ViscosityScheme &viscous_type,
@@ -422,6 +423,11 @@ namespace aspect
          * Whether to include viscoelasticity in the constitutive formulation.
          */
         bool use_elasticity;
+
+        /**
+         * Whether to include diffusion on a compositional field, i.e., strain rate.
+         */
+        bool enable_diffusion;
     };
 
   }
