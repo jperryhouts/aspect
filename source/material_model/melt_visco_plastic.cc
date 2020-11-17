@@ -796,9 +796,9 @@ namespace aspect
     {
       if (out.template get_additional_output<PlasticAdditionalOutputs<dim> >() == nullptr)
         {
-          const unsigned int n_points = out.viscosities.size();
+          const unsigned int n_points = out.n_evaluation_points();
           out.additional_outputs.push_back(
-            std::make_shared<MaterialModel::PlasticAdditionalOutputs<dim>> (n_points));
+            std_cxx14::make_unique<MaterialModel::PlasticAdditionalOutputs<dim>> (n_points));
         }
     }
 

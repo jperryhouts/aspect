@@ -108,18 +108,18 @@ namespace aspect
          * equation as $\nabla \cdot (\rho \mathbf u)=0$ (compressible Stokes)
          * or as $\nabla \cdot \mathbf{u}=0$ (incompressible Stokes).
          */
-        virtual bool is_compressible () const;
+        virtual bool is_compressible () const override;
 
         /**
          * @name Reference quantities
          * @{
          */
-        virtual double reference_viscosity () const;
+        virtual double reference_viscosity () const override;
 
-        virtual double reference_darcy_coefficient () const;
+        virtual double reference_darcy_coefficient () const override;
 
         virtual void evaluate(const typename Interface<dim>::MaterialModelInputs &in,
-                              typename Interface<dim>::MaterialModelOutputs &out) const;
+                              typename Interface<dim>::MaterialModelOutputs &out) const override;
 
         virtual void melt_fractions (const MaterialModel::MaterialModelInputs<dim> &in,
                                      std::vector<double> &melt_fractions) const;
@@ -151,7 +151,7 @@ namespace aspect
 
         virtual
         void
-        create_additional_named_outputs (MaterialModel::MaterialModelOutputs<dim> &out) const;
+        create_additional_named_outputs (MaterialModel::MaterialModelOutputs<dim> &out) const override;
 
       private:
 
