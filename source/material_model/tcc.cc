@@ -19,7 +19,8 @@
 */
 
 
-#include <aspect/material_model/cpp.h>
+#include <aspect/material_model/tcc.h>
+#include <stdio.h>
 
 
 namespace aspect
@@ -28,7 +29,7 @@ namespace aspect
   {
     template <int dim>
     bool
-    CPP<dim>::
+    TCC<dim>::
     is_compressible () const
     {
       return is_compressible_param;
@@ -36,7 +37,7 @@ namespace aspect
 
     template <int dim>
     double
-    CPP<dim>::
+    TCC<dim>::
     reference_viscosity () const
     {
       return reference_viscosity_param;
@@ -44,11 +45,76 @@ namespace aspect
 
     template <int dim>
     void
-    CPP<dim>::
+    TCC<dim>::
     evaluate(const MaterialModel::MaterialModelInputs<dim> &in,
              MaterialModel::MaterialModelOutputs<dim> &out) const
     {
-      user_eval (in, out, this);
+      // std::cout << "Evaluating material model" << std::endl;
+      // user_eval (in, out, this);
+      for (unsigned int _i=0; _i<in.position.size(); ++_i)
+        {
+          double _position[3] =
+            {
+              in.position[_i][0],
+              in.position[_i][1],
+              (dim == 3) ? in.position[_i][2] : 0
+            };
+          double _temperature = in.temperature[_i];
+          double _pressure = in.pressure[_i];
+          double _pressure_gradient[3] =
+            {
+              in.pressure_gradient[_i][0],
+              in.pressure_gradient[_i][1],
+              (dim == 3) ? in.pressure_gradient[_i][2] : 0.0,
+            };
+          double _velocity[3] =
+            {
+              in.velocity[_i][0],
+              in.velocity[_i][1],
+              (dim == 3) ? in.velocity[_i][2] : 0.0,
+            };
+
+          // unsigned int _n_compositions = in.composition[_i].size();
+          // double *_compositions;
+          // _compositions = (double *)malloc(_n_compositions * sizeof (double));
+          // for (unsigned int c = 0; c < _n_compositions; ++c) {
+          //   _compositions[c] = in.composition[_i][c];
+          // }
+
+          double _strain_rate[3][3] =
+            { {0,0,0}, {0,0,0}, {0,0,0} };
+          for (unsigned int _j=0; _j < dim; ++_j) {
+            for (unsigned int _k=0; _k < dim; ++_k) {
+              _strain_rate[_j][_k] = in.strain_rate[_i][_j][_k];
+            }
+          }
+
+          // std::cout << "Evaluating" << std::endl;
+
+          out.densities[_i] = tcc_density_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          // std::cout << "Density: " << out.densities[_i] << std::endl;
+
+          out.viscosities[_i] = tcc_viscosity_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          // std::cout << "Viscosity: " << out.viscosities[_i] << std::endl;
+
+          out.thermal_conductivities[_i] = tcc_conductivity_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          // std::cout << "Thermal conductivity: " << out.thermal_conductivities[_i] << std::endl;
+
+          out.thermal_expansion_coefficients[_i] = tcc_expansivity_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          // std::cout << "Thermal expansivity: " << out.thermal_expansion_coefficients[_i] << std::endl;
+
+          out.specific_heat[_i] = tcc_specific_heat_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          // std::cout << "Specific heat: " << out.specific_heat[_i] << std::endl;
+
+          out.compressibilities[_i] = tcc_compressibility_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          // std::cout << "Compressibility: " << out.compressibilities[_i] << std::endl;
+
+          out.entropy_derivative_pressure[_i] = tcc_entropy_derivative_pressure_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          // std::cout << "Entropy derivative pressure: " << out.entropy_derivative_pressure[_i] << std::endl;
+
+          for (unsigned int c=0; c<in.composition[_i].size(); ++c)
+            out.reaction_terms[_i][c] = 0;
+        }
     }
 
     /*
@@ -320,13 +386,13 @@ namespace aspect
 
     template <int dim>
     void
-    CPP<dim>::declare_parameters (ParameterHandler &prm)
+    TCC<dim>::declare_parameters (ParameterHandler &prm)
     {
       const std::string pattern_of_deps
         = "none|compositional fields|pressure|strain rate|temperature";
       prm.enter_subsection("Material model");
       {
-        prm.enter_subsection("C plus plus");
+        prm.enter_subsection("C parser");
         {
           prm.declare_entry ("Is compressible", "false",
                              Patterns::Bool (),
@@ -347,7 +413,7 @@ namespace aspect
           prm.declare_entry ("Update function", "",
                              Patterns::Anything (),
                              "Contents of a function that can modify global variables "
-                             "defined in 'Material model/C plus plus/Global variable "
+                             "defined in 'Material model/C parser/Global variable "
                              "definitions'. It is invoked before any of the evaluation "
                              "functions are called at each model position."
                              "\n\nThe state variables `position', `temperature', `pressure', "
@@ -357,7 +423,7 @@ namespace aspect
           prm.declare_entry ("Viscosity function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating viscosity. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'."
                              "\n\nThe state variables `position', `temperature', `pressure', "
                              "`pressure_gradient', `velocity', `composition', `strain_rate' are "
@@ -366,7 +432,7 @@ namespace aspect
           prm.declare_entry ("Density function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating density. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'."
                              "\n\nThe state variables `position', `temperature', `pressure', "
                              "`pressure_gradient', `velocity', `composition', `strain_rate' are "
@@ -375,7 +441,7 @@ namespace aspect
           prm.declare_entry ("Thermal conductivity function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating thermal conductivity. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'."
                              "\n\nThe state variables `position', `temperature', `pressure', "
                              "`pressure_gradient', `velocity', `composition', `strain_rate' are "
@@ -384,7 +450,7 @@ namespace aspect
           prm.declare_entry ("Thermal expansivity function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating thermal expansivity. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'."
                              "\n\nThe state variables `position', `temperature', `pressure', "
                              "`pressure_gradient', `velocity', `composition', `strain_rate' are "
@@ -393,7 +459,7 @@ namespace aspect
           prm.declare_entry ("Specific heat function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating specific heat. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'."
                              "\n\nThe state variables `position', `temperature', `pressure', "
                              "`pressure_gradient', `velocity', `composition', `strain_rate' are "
@@ -402,7 +468,7 @@ namespace aspect
           prm.declare_entry ("Compressibility function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating compressibility. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'."
                              "\n\nThe state variables `position', `temperature', `pressure', "
                              "`pressure_gradient', `velocity', `composition', `strain_rate' are "
@@ -411,7 +477,7 @@ namespace aspect
           prm.declare_entry ("Entropy derivative pressure function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating entropy derivative with respect to pressure. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'."
                              "\n\nThe state variables `position', `temperature', `pressure', "
                              "`pressure_gradient', `velocity', `composition', `strain_rate' are "
@@ -420,7 +486,7 @@ namespace aspect
           prm.declare_entry ("Entropy derivative temperature function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating entropy derivative with respect to temperature. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'."
                              "\n\nThe state variables `position', `temperature', `pressure', "
                              "`pressure_gradient', `velocity', `composition', `strain_rate' are "
@@ -429,7 +495,7 @@ namespace aspect
           prm.declare_entry ("Reaction function", "",
                              Patterns::Anything (),
                              "Contents of a function for calculating reaction terms. It has access to "
-                             "all variables defined in 'Material model/C plus plus/Global variable "
+                             "all variables defined in 'Material model/C parser/Global variable "
                              "definitions'. It receives an integer called `c' that denotes the particular "
                              "compositional field for which to calculate a reaction rate."
                              "\n\nThe state variables `position', `temperature', `pressure', "
@@ -476,18 +542,46 @@ namespace aspect
       prm.leave_subsection();
     }
 
+    template <int dim>
+    std::string
+    TCC<dim>::generate_tcc_function(const std::string &code_snippet,
+                                    const std::string &function_name) const
+      {
+        const std::string code = std::string("double "+function_name+" (\n")
+                  + "  const double position[3],\n"
+                  + "  const double temperature,\n"
+                  + "  const double pressure,\n"
+                  + "  const double pressure_gradient[3],\n"
+                  + "  const double velocity[3],\n"
+                  + "  const double strain_rate[3][3]\n"
+                  // + "  const double *compositions"
+                  + ")\n{\n"
+                  // + "const unsigned int n_compositions = "
+                  // + Utilities::int_to_string(n_compositional_fields)
+                  // + ";\n"
+                  + code_snippet
+                  + ";\n}";
+        // std::cout << code << std::endl;
+        return code;
+      }
 
     template <int dim>
     void
-    CPP<dim>::parse_parameters (ParameterHandler &prm)
+    TCC<dim>::parse_parameters (ParameterHandler &prm)
     {
-#if ASPECT_SAFE==0
-#if ASPECT_USE_SHARED_LIBS==1
+// #if ASPECT_SAFE==0
+// #if ASPECT_USE_SHARED_LIBS==1
+      // int n_compositional_fields;
+      // prm.enter_subsection ("Compositional fields");
+      // {
+      //   n_compositional_fields = prm.get_integer("Number of fields");
+      // }
+      // prm.leave_subsection();
+
       prm.enter_subsection ("Material model");
       {
-        prm.enter_subsection ("C plus plus");
+        prm.enter_subsection ("C parser");
         {
-
           // Read global plugin settings
           is_compressible_param               = prm.get_bool ("Is compressible");
           reference_viscosity_param           = prm.get_double ("Reference viscosity");
@@ -508,6 +602,64 @@ namespace aspect
           user_code.entropy_derivative_t_function  = prm.get ("Entropy derivative temperature function");
           user_code.reaction_function              = prm.get ("Reaction function");
 
+#define MKTCCFUNCTION(_TCC_FUNC_PTR,_USER_CODE) \
+  do { \
+      { \
+        TCCState *tccState; \
+        void *tcc_mem; \
+        tccState = tcc_new(); \
+        tcc_set_output_type(tccState, TCC_OUTPUT_MEMORY); \
+        std::string function_code = generate_tcc_function(_USER_CODE, "evaluator"); \
+        tcc_compile_string(tccState, function_code.c_str()); \
+        tcc_mem = malloc(tcc_relocate(tccState, NULL)); \
+        tcc_relocate(tccState, tcc_mem); \
+        _TCC_FUNC_PTR = (evalz_t) tcc_get_symbol(tccState, "evaluator"); \
+        tcc_delete(tccState); \
+      } \
+    } while (false)
+
+// reinterpret_cast<void*&>(_TCC_FUNC_PTR) =  tcc_get_symbol(tccState, "evaluator");
+// _TCC_FUNC_PTR = reinterpret_cast<evalz_t>(reinterpret_cast<size_t>(gptr));
+
+          MKTCCFUNCTION(tcc_viscosity_func, user_code.viscosity_function);
+          MKTCCFUNCTION(tcc_density_func, user_code.density_function);
+          MKTCCFUNCTION(tcc_conductivity_func, user_code.thermal_conductivity_function);
+          MKTCCFUNCTION(tcc_expansivity_func, user_code.thermal_expansivity_function);
+          MKTCCFUNCTION(tcc_specific_heat_func, user_code.specific_heat_function);
+          MKTCCFUNCTION(tcc_compressibility_func, user_code.compressibility_function);
+          MKTCCFUNCTION(tcc_entropy_derivative_pressure_func, user_code.entropy_derivative_p_function);
+
+          std::cout << "All functions built successfully;" << std::endl;
+
+          // {
+          //   TCCState *tccState;
+
+          //   // void *tcc_mem;
+
+          //   std::string viscosity_function_code = generate_tcc_function(user_code.viscosity_function, n_compositional_fields);
+
+          //   tccState = tcc_new();
+          //   tcc_set_output_type(tccState, TCC_OUTPUT_MEMORY);
+          //   tcc_compile_string(tccState, viscosity_function_code.c_str());
+
+          //   //tcc_add_symbol(tccState, "add", adder);
+
+          //   //tcc_mem = malloc(tcc_relocate(tccState, NULL));
+          //   tcc_relocate(tccState, TCC_RELOCATE_AUTO);
+
+          //   // using evalz_t = int (double, double);
+          //   // using evalz_t = double (double[3], double, double, double[3], double[3], double[], double[3][3]);
+
+          //   reinterpret_cast<void*&>(tcc_viscosity_func) = tcc_get_symbol(tccState, "viscosity_function");
+          //   tcc_delete(tccState);
+
+          //   // printf("tcc_viscosity_func returned: %d\n", );
+
+          //   // free(tcc_mem);
+          // }
+
+
+
           // Read nonlinear dependencies
           const std::vector<std::string> viscosity_deps =
             Utilities::split_string_list (prm.get ("List of viscosity dependencies"));
@@ -522,15 +674,15 @@ namespace aspect
 
           // Assert that user didn't mix 'none' with other nonlinear dependencies
           assert_valid_deps (viscosity_deps,
-                             "Material model/C plus plus/List of viscosity dependencies");
+                             "Material model/C parser/List of viscosity dependencies");
           assert_valid_deps (density_deps,
-                             "Material model/C plus plus/List of density dependencies");
+                             "Material model/C parser/List of density dependencies");
           assert_valid_deps (compressibility_deps,
-                             "Material model/C plus plus/List of compressibility dependencies");
+                             "Material model/C parser/List of compressibility dependencies");
           assert_valid_deps (specific_heat_deps,
-                             "Material model/C plus plus/List of specific heat dependencies");
+                             "Material model/C parser/List of specific heat dependencies");
           assert_valid_deps (thermal_conductivity_deps,
-                             "Material model/C plus plus/List of thermal conductivity dependencies");
+                             "Material model/C parser/List of thermal conductivity dependencies");
 
           // Declare dependencies
           this->model_dependence.viscosity              = NonlinearDependence::uninitialized;
@@ -539,72 +691,74 @@ namespace aspect
           this->model_dependence.specific_heat          = NonlinearDependence::uninitialized;
           this->model_dependence.thermal_conductivity   = NonlinearDependence::uninitialized;
 
-          for (unsigned int i=0; i<viscosity_deps.size(); ++i)
-            this->model_dependence.viscosity |= str2dep(viscosity_deps[i]);
-          for (unsigned int i=0; i<density_deps.size(); ++i)
-            this->model_dependence.density |= str2dep(density_deps[i]);
-          for (unsigned int i=0; i<compressibility_deps.size(); ++i)
-            this->model_dependence.compressibility |= str2dep(compressibility_deps[i]);
-          for (unsigned int i=0; i<specific_heat_deps.size(); ++i)
-            this->model_dependence.specific_heat |= str2dep(specific_heat_deps[i]);
-          for (unsigned int i=0; i<thermal_conductivity_deps.size(); ++i)
-            this->model_dependence.thermal_conductivity |= str2dep(thermal_conductivity_deps[i]);
+          std::cout << "Initialized nonlinear dependencies" << std::endl;
 
-          // Choose filenames and create any necessary directories
-          std::string cdir = this->get_output_directory() + "cpp_material/";
-          std::string sfname = cdir + "material.cc";
-          std::string ofname = cdir + "libmaterial.so";
-          Utilities::create_directory(cdir, MPI_COMM_WORLD, true);
+          // for (unsigned int i=0; i<viscosity_deps.size(); ++i)
+          //   this->model_dependence.viscosity |= string_to_dependence(viscosity_deps[i]);
+          // for (unsigned int i=0; i<density_deps.size(); ++i)
+          //   this->model_dependence.density |= string_to_dependence(density_deps[i]);
+          // for (unsigned int i=0; i<compressibility_deps.size(); ++i)
+          //   this->model_dependence.compressibility |= string_to_dependence(compressibility_deps[i]);
+          // for (unsigned int i=0; i<specific_heat_deps.size(); ++i)
+          //   this->model_dependence.specific_heat |= string_to_dependence(specific_heat_deps[i]);
+          // for (unsigned int i=0; i<thermal_conductivity_deps.size(); ++i)
+          //   this->model_dependence.thermal_conductivity |= string_to_dependence(thermal_conductivity_deps[i]);
 
-          // Generate and compile code
-          int error;
-          if (dealii::Utilities::MPI::this_mpi_process (MPI_COMM_WORLD) == 0)
-            {
-              generate_src (dim, user_code, indenter, sfname);
+          // // Choose filenames and create any necessary directories
+          // std::string cdir = this->get_output_directory() + "tcc_material/";
+          // std::string sfname = cdir + "material.cc";
+          // std::string ofname = cdir + "libmaterial.so";
+          // Utilities::create_directory(cdir, MPI_COMM_WORLD, true);
 
-              generate_cmakelists (cdir);
+          // // Generate and compile code
+          // int error;
+          // if (dealii::Utilities::MPI::this_mpi_process (MPI_COMM_WORLD) == 0)
+          //   {
+          //     generate_src (dim, user_code, indenter, sfname);
 
-              std::cout << "Compiling material model <" + sfname + ">.\n" << std::endl;
-              error = execute ("cd '" + cdir + "' && cmake . > build.log 2>&1 && make >> build.log 2>&1");
-              MPI_Bcast(&error, 1, MPI_INT, 0, MPI_COMM_WORLD);
-              AssertThrow (error == 0,
-                           ExcMessage (std::string("Compiling material model failed. See build log at <")
-                                       + cdir + "build.log>."));
-            }
-          else
-            {
-              MPI_Bcast(&error, 1, MPI_INT, 0, MPI_COMM_WORLD);
-              if (error != 0)
-                throw aspect::QuietException();
-            }
+          //     generate_cmakelists (cdir);
 
-          // Load function via dlopen
-          void *handle = dlopen (ofname.c_str(), RTLD_LAZY);
-          AssertThrow (handle != nullptr,
-                       ExcMessage (std::string("Could not load compiled material model ")
-                                   + "from shared library <" + ofname + ">, based on generated "
-                                   + "source code <" + sfname + ">. The operating system "
-                                   + "returned error: <" + dlerror() + ">."));
+          //     std::cout << "Compiling material model <" + sfname + ">.\n" << std::endl;
+          //     error = execute ("cd '" + cdir + "' && cmake . > build.log 2>&1 && make >> build.log 2>&1");
+          //     MPI_Bcast(&error, 1, MPI_INT, 0, MPI_COMM_WORLD);
+          //     AssertThrow (error == 0,
+          //                  ExcMessage (std::string("Compiling material model failed. See build log at <")
+          //                              + cdir + "build.log>."));
+          //   }
+          // else
+          //   {
+          //     MPI_Bcast(&error, 1, MPI_INT, 0, MPI_COMM_WORLD);
+          //     if (error != 0)
+          //       throw aspect::QuietException();
+          //   }
 
-          user_eval = (eval_t) dlsym(handle, "eval");
+          // // Load function via dlopen
+          // void *handle = dlopen (ofname.c_str(), RTLD_LAZY);
+          // AssertThrow (handle != nullptr,
+          //              ExcMessage (std::string("Could not load compiled material model ")
+          //                          + "from shared library <" + ofname + ">, based on generated "
+          //                          + "source code <" + sfname + ">. The operating system "
+          //                          + "returned error: <" + dlerror() + ">."));
+
+          // user_eval = (eval_t) dlsym(handle, "eval");
         }
         prm.leave_subsection();
       }
       prm.leave_subsection();
-#else
-      // No shared libraries
-      AssertThrow(false, ExcMessage("The 'cpp' material model requires "
-                                    "that Aspect can load shared libraries. "
-                                    "Please check your build configuration."));
-#endif
-#else
-      // ASPECT_SAFE == 1
-      AssertThrow(false, ExcMessage("The 'cpp' material model requires "
-                                    "the ability to execute arbitrary code, "
-                                    "which is disabled by the ASPECT_SAFE "
-                                    "variable. Please check your build "
-                                    "configuration."));
-#endif
+// #else
+//       // No shared libraries
+//       AssertThrow(false, ExcMessage("The 'C parser' material model requires "
+//                                     "that Aspect can load shared libraries. "
+//                                     "Please check your build configuration."));
+// #endif
+// #else
+//       // ASPECT_SAFE == 1
+//       AssertThrow(false, ExcMessage("The 'C parser' material model requires "
+//                                     "the ability to execute arbitrary code, "
+//                                     "which is disabled by the ASPECT_SAFE "
+//                                     "variable. Please check your build "
+//                                     "configuration."));
+// #endif
     }
   }
 }
@@ -614,10 +768,10 @@ namespace aspect
 {
   namespace MaterialModel
   {
-    ASPECT_REGISTER_MATERIAL_MODEL(CPP,
-                                   "cpp",
+    ASPECT_REGISTER_MATERIAL_MODEL(TCC,
+                                   "C parser",
                                    "A material model whose evaluate function is dynamically "
                                    "compiled from code defined in section 'Material model/C "
-                                   "plus plus' of the parameter file.")
+                                   "parser' of the parameter file.")
   }
 }

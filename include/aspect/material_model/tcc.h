@@ -18,12 +18,13 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#ifndef _aspect_material_model_cpp_h
-#define _aspect_material_model_cpp_h
+#ifndef _aspect_material_model_tcc_h
+#define _aspect_material_model_tcc_h
 
 #include <aspect/material_model/interface.h>
 #include <aspect/simulator_access.h>
 #include <aspect/utilities.h>
+#include <libtcc.h>
 #include <regex>
 
 // This plugin requires that we can load shared libraries.
@@ -62,7 +63,7 @@ namespace aspect
      */
     inline
     NonlinearDependence::Dependence
-    str2dep (const std::string depstr)
+    string_to_dependence (const std::string depstr)
     {
       if (depstr == "none")
         {
@@ -100,7 +101,7 @@ namespace aspect
     execute (const std::string &cmd)
     {
       AssertThrow(system((char *)0) != 0,
-                  ExcMessage("The 'CPP' material model requires a command-processor, "
+                  ExcMessage("The 'TCC' material model requires a command-processor, "
                              "which appears to be unavailable on this system."));
 
       return system(cmd.c_str());
@@ -159,7 +160,7 @@ namespace aspect
      * @ingroup MaterialModels
      */
     template <int dim>
-    class CPP : public MaterialModel::Interface<dim>, public ::aspect::SimulatorAccess<dim>
+    class TCC : public MaterialModel::Interface<dim>, public ::aspect::SimulatorAccess<dim>
     {
       public:
 
@@ -198,6 +199,11 @@ namespace aspect
         double reference_viscosity_param;
         bool is_compressible_param;
 
+        virtual
+        std::string
+        generate_tcc_function(const std::string &,
+                              const std::string &) const;
+
         /**
          * Define function pointer for the new evaluate function.
          */
@@ -209,9 +215,25 @@ namespace aspect
          * Pointer to the user's evaluation function.
          */
         eval_t user_eval;
+
+
     };
 
   }
+}
+
+extern "C"
+{
+  typedef double (*evalz_t) (const double[3], const double, const double, const double[3], const double[3], const double[3][3]);
+  // using evalz_t = double (const double[3], const double, const double, const double[3], const double[3], const double[3][3]);
+
+  evalz_t tcc_viscosity_func = 0;
+  evalz_t tcc_density_func = 0;
+  evalz_t tcc_conductivity_func = 0;
+  evalz_t tcc_expansivity_func = 0;
+  evalz_t tcc_specific_heat_func = 0;
+  evalz_t tcc_compressibility_func = 0;
+  evalz_t tcc_entropy_derivative_pressure_func = 0;
 }
 
 #endif
