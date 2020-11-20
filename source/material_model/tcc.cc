@@ -74,42 +74,54 @@ namespace aspect
               (dim == 3) ? in.velocity[_i][2] : 0.0,
             };
 
-          // unsigned int _n_compositions = in.composition[_i].size();
-          // double *_compositions;
-          // _compositions = (double *)malloc(_n_compositions * sizeof (double));
-          // for (unsigned int c = 0; c < _n_compositions; ++c) {
-          //   _compositions[c] = in.composition[_i][c];
-          // }
+          unsigned int _n_compositions = in.composition[_i].size();
+          double *_compositions;
+          _compositions = (double *)malloc(_n_compositions * sizeof (double));
+          for (unsigned int c = 0; c < _n_compositions; ++c) {
+            _compositions[c] = in.composition[_i][c];
+          }
 
-          double _strain_rate[3][3] =
-            { {0,0,0}, {0,0,0}, {0,0,0} };
-          for (unsigned int _j=0; _j < dim; ++_j) {
-            for (unsigned int _k=0; _k < dim; ++_k) {
-              _strain_rate[_j][_k] = in.strain_rate[_i][_j][_k];
+          double _strain_rate[9] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+          if (in.strain_rate.size() > 0) {
+            for (unsigned int _j=0; _j < dim; ++_j) {
+              for (unsigned int _k=0; _k < dim; ++_k) {
+                _strain_rate[3*_j+_k] = in.strain_rate[_i][_j][_k];
+              }
             }
           }
 
+          const double _args[20] = {
+            _position[0], _position[1], _position[2],
+            _temperature,
+            _pressure,
+            _pressure_gradient[0], _pressure_gradient[1], _pressure_gradient[2],
+            _velocity[0], _velocity[1], _velocity[2],
+            _strain_rate[0], _strain_rate[1], _strain_rate[2],
+            _strain_rate[3], _strain_rate[4], _strain_rate[5],
+            _strain_rate[6], _strain_rate[7], _strain_rate[8]
+          };
+
           // std::cout << "Evaluating" << std::endl;
 
-          out.densities[_i] = tcc_density_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          out.densities[_i] = tcc_density_func (_args, _n_compositions, _compositions); // (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
           // std::cout << "Density: " << out.densities[_i] << std::endl;
 
-          out.viscosities[_i] = tcc_viscosity_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          out.viscosities[_i] = tcc_viscosity_func (_args, _n_compositions, _compositions); // (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
           // std::cout << "Viscosity: " << out.viscosities[_i] << std::endl;
 
-          out.thermal_conductivities[_i] = tcc_conductivity_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          out.thermal_conductivities[_i] = tcc_conductivity_func (_args, _n_compositions, _compositions); // (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
           // std::cout << "Thermal conductivity: " << out.thermal_conductivities[_i] << std::endl;
 
-          out.thermal_expansion_coefficients[_i] = tcc_expansivity_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          out.thermal_expansion_coefficients[_i] = tcc_expansivity_func (_args, _n_compositions, _compositions); // (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
           // std::cout << "Thermal expansivity: " << out.thermal_expansion_coefficients[_i] << std::endl;
 
-          out.specific_heat[_i] = tcc_specific_heat_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          out.specific_heat[_i] = tcc_specific_heat_func (_args, _n_compositions, _compositions); // (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
           // std::cout << "Specific heat: " << out.specific_heat[_i] << std::endl;
 
-          out.compressibilities[_i] = tcc_compressibility_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          out.compressibilities[_i] = tcc_compressibility_func (_args, _n_compositions, _compositions); // (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
           // std::cout << "Compressibility: " << out.compressibilities[_i] << std::endl;
 
-          out.entropy_derivative_pressure[_i] = tcc_entropy_derivative_pressure_func (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
+          out.entropy_derivative_pressure[_i] = tcc_entropy_derivative_pressure_func (_args, _n_compositions, _compositions); // (_position, _temperature, _pressure, _pressure_gradient, _velocity, _strain_rate);
           // std::cout << "Entropy derivative pressure: " << out.entropy_derivative_pressure[_i] << std::endl;
 
           for (unsigned int c=0; c<in.composition[_i].size(); ++c)
@@ -548,14 +560,29 @@ namespace aspect
                                     const std::string &function_name) const
       {
         const std::string code = std::string("double "+function_name+" (\n")
-                  + "  const double position[3],\n"
-                  + "  const double temperature,\n"
-                  + "  const double pressure,\n"
-                  + "  const double pressure_gradient[3],\n"
-                  + "  const double velocity[3],\n"
-                  + "  const double strain_rate[3][3]\n"
+                  + "    double args[20],\n"
+                  + "    int n_compositions,\n"
+                  + "    double *compositions )\n{\n"
+                  // + "  double position[3],\n"
+                  // + "  double temperature,\n"
+                  // + "  double pressure,\n"
+                  // + "  double pressure_gradient[3],\n"
+                  // + "  double velocity[3],\n"
+                  // + "  double &flat_edot[9]"
                   // + "  const double *compositions"
-                  + ")\n{\n"
+                  // + ")\n{\n"
+                  + "  const double position[3]          = {args[0], args[1], args[2]};\n"
+                  + "  const double temperature          = args[3];\n"
+                  + "  const double pressure             = args[4];\n"
+                  + "  const double pressure_gradient[3] = { args[5], args[6], args[7] };\n"
+                  + "  const double velocity[3]          = { args[8], args[9], args[10] };\n"
+                  + "  const double strain_rate[3][3] = {\n"
+                  + "    { args[11], args[12], args[13] },\n"
+                  + "    { args[14], args[15], args[16] },\n"
+                  + "    { args[17], args[18], args[19] } };\n"
+                  // + "    {flat_edot[0], flat_edot[1], flat_edot[2]},\n"
+                  // + "    {flat_edot[3], flat_edot[4], flat_edot[5]},\n"
+                  // + "    {flat_edot[6], flat_edot[7], flat_edot[8]} };\n"
                   // + "const unsigned int n_compositions = "
                   // + Utilities::int_to_string(n_compositional_fields)
                   // + ";\n"
@@ -629,7 +656,7 @@ namespace aspect
           MKTCCFUNCTION(tcc_compressibility_func, user_code.compressibility_function);
           MKTCCFUNCTION(tcc_entropy_derivative_pressure_func, user_code.entropy_derivative_p_function);
 
-          std::cout << "All functions built successfully;" << std::endl;
+          // std::cout << "All functions built successfully;" << std::endl;
 
           // {
           //   TCCState *tccState;
@@ -691,18 +718,18 @@ namespace aspect
           this->model_dependence.specific_heat          = NonlinearDependence::uninitialized;
           this->model_dependence.thermal_conductivity   = NonlinearDependence::uninitialized;
 
-          std::cout << "Initialized nonlinear dependencies" << std::endl;
+          // std::cout << "Initialized nonlinear dependencies" << std::endl;
 
-          // for (unsigned int i=0; i<viscosity_deps.size(); ++i)
-          //   this->model_dependence.viscosity |= string_to_dependence(viscosity_deps[i]);
-          // for (unsigned int i=0; i<density_deps.size(); ++i)
-          //   this->model_dependence.density |= string_to_dependence(density_deps[i]);
-          // for (unsigned int i=0; i<compressibility_deps.size(); ++i)
-          //   this->model_dependence.compressibility |= string_to_dependence(compressibility_deps[i]);
-          // for (unsigned int i=0; i<specific_heat_deps.size(); ++i)
-          //   this->model_dependence.specific_heat |= string_to_dependence(specific_heat_deps[i]);
-          // for (unsigned int i=0; i<thermal_conductivity_deps.size(); ++i)
-          //   this->model_dependence.thermal_conductivity |= string_to_dependence(thermal_conductivity_deps[i]);
+          for (unsigned int i=0; i<viscosity_deps.size(); ++i)
+            this->model_dependence.viscosity |= string_to_dependence(viscosity_deps[i]);
+          for (unsigned int i=0; i<density_deps.size(); ++i)
+            this->model_dependence.density |= string_to_dependence(density_deps[i]);
+          for (unsigned int i=0; i<compressibility_deps.size(); ++i)
+            this->model_dependence.compressibility |= string_to_dependence(compressibility_deps[i]);
+          for (unsigned int i=0; i<specific_heat_deps.size(); ++i)
+            this->model_dependence.specific_heat |= string_to_dependence(specific_heat_deps[i]);
+          for (unsigned int i=0; i<thermal_conductivity_deps.size(); ++i)
+            this->model_dependence.thermal_conductivity |= string_to_dependence(thermal_conductivity_deps[i]);
 
           // // Choose filenames and create any necessary directories
           // std::string cdir = this->get_output_directory() + "tcc_material/";

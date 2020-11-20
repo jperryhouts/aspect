@@ -224,16 +224,17 @@ namespace aspect
 
 extern "C"
 {
-  typedef double (*evalz_t) (const double[3], const double, const double, const double[3], const double[3], const double[3][3]);
+  // typedef double (*evalz_t) (const double[3], const double, const double, const double[3], const double[3], const double[9]);
   // using evalz_t = double (const double[3], const double, const double, const double[3], const double[3], const double[3][3]);
+  typedef double (*evalz_t) (const double[20], const int, const double*);
 
-  evalz_t tcc_viscosity_func = 0;
-  evalz_t tcc_density_func = 0;
-  evalz_t tcc_conductivity_func = 0;
-  evalz_t tcc_expansivity_func = 0;
-  evalz_t tcc_specific_heat_func = 0;
-  evalz_t tcc_compressibility_func = 0;
-  evalz_t tcc_entropy_derivative_pressure_func = 0;
+  evalz_t tcc_viscosity_func;
+  evalz_t tcc_density_func;
+  evalz_t tcc_conductivity_func;
+  evalz_t tcc_expansivity_func;
+  evalz_t tcc_specific_heat_func;
+  evalz_t tcc_compressibility_func;
+  evalz_t tcc_entropy_derivative_pressure_func;
 }
 
 #endif
