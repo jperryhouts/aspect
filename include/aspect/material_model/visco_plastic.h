@@ -353,7 +353,6 @@ namespace aspect
          * Does nothing otherwise.
          */
         void fill_diffusion_outputs (const unsigned int i,
-                                    const std::vector<double> &volume_fractions,
                                     const MaterialModel::MaterialModelInputs<dim> &in,
                                      MaterialModel::MaterialModelOutputs<dim> &out) const;
 
@@ -438,7 +437,9 @@ namespace aspect
         /**
          * Whether to include diffusion on a compositional field, i.e., strain rate.
          */
-        bool enable_diffusion;
+        // bool use_strain_rate_compositional_field;
+        bool use_strain_rate_hysteresis;
+        double strain_rate_origin_coefficient;
     };
 
   }

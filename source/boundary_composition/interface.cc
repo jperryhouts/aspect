@@ -29,6 +29,8 @@
 #include <deal.II/base/signaling_nan.h>
 #include <tuple>
 
+#include <boost/lexical_cast.hpp>
+
 #include <list>
 
 
@@ -51,6 +53,12 @@ namespace aspect
     {}
 
     template <int dim>
+    void
+    Interface<dim>::
+    declare_parameters (ParameterHandler &)
+    {}
+
+    template <int dim>
     double
     Interface<dim>::boundary_composition (const types::boundary_id /*boundary_indicator*/,
                                           const Point<dim>        &/*position*/,
@@ -63,13 +71,6 @@ namespace aspect
                              "be removed in a later version of ASPECT."));
       return numbers::signaling_nan<double>();
     }
-
-    template <int dim>
-    void
-    Interface<dim>::
-    declare_parameters (dealii::ParameterHandler &)
-    {}
-
 
     template <int dim>
     void
@@ -133,56 +134,20 @@ namespace aspect
       // parameters we declare here
       prm.enter_subsection ("Boundary composition model");
       {
-        model_names
+        boundary_composition_names
           = Utilities::split_string_list(prm.get("List of model names"));
 
-        AssertThrow(Utilities::has_unique_entries(model_names),
+        AssertThrow(Utilities::has_unique_entries(boundary_composition_names),
                     ExcMessage("The list of strings for the parameter "
                                "'Boundary composition model/List of model names' contains entries more than once. "
                                "This is not allowed. Please check your parameter file."));
 
-        const std::string model_name = prm.get ("Model name");
-
-        AssertThrow (model_name == "unspecified" || model_names.size() == 0,
-                     ExcMessage ("The parameter 'Model name' is only used for reasons"
-                                 "of backwards compatibility and can not be used together with "
-                                 "the new functionality 'List of model names'. Please add your "
-                                 "boundary composition model to the list instead."));
-
-        if (!(model_name == "unspecified"))
-          model_names.push_back(model_name);
-
         // create operator list
         std::vector<std::string> model_operator_names =
           Utilities::possibly_extend_from_1_to_N (Utilities::split_string_list(prm.get("List of model operators")),
-                                                  model_names.size(),
+                                                  boundary_composition_names.size(),
                                                   "List of model operators");
-        model_operators = Utilities::create_model_operator_list(model_operator_names);
-
-        try
-          {
-            const std::vector<types::boundary_id> x_fixed_composition_boundary_indicators
-              = this->get_geometry_model().translate_symbolic_boundary_names_to_ids (Utilities::split_string_list
-                                                                                     (prm.get ("Fixed composition boundary indicators")));
-            fixed_composition_boundary_indicators
-              = std::set<types::boundary_id> (x_fixed_composition_boundary_indicators.begin(),
-                                              x_fixed_composition_boundary_indicators.end());
-
-            // If model names have been set, but no boundaries on which to use them,
-            // ignore the set values, do not create objects that are never used.
-            if (fixed_composition_boundary_indicators.size() == 0)
-              {
-                model_names.clear();
-                model_operators.clear();
-              }
-          }
-        catch (const std::string &error)
-          {
-            AssertThrow (false, ExcMessage ("While parsing the entry <Model settings/Fixed composition "
-                                            "boundary indicators>, there was an error. Specifically, "
-                                            "the conversion function complained as follows: "
-                                            + error));
-          }
+        boundary_composition_operators = Utilities::create_model_operator_list(model_operator_names);
 
         if (prm.get ("Allow fixed composition on outflow boundaries") == "true")
           allow_fixed_composition_on_outflow_boundaries = true;
@@ -193,17 +158,162 @@ namespace aspect
         else
           AssertThrow(false, ExcMessage("'Allow fixed composition on outflow boundaries' "
                                         "must be set to 'true' or 'false', or to its default value."));
+
+        // Now, figure out which model is used for which boundary and which composition
+        prm.enter_subsection("Model settings");
+        {
+          boundary_composition_maps.resize(this->n_compositional_fields());
+
+          const std::vector<std::string> x_fixed_composition_boundary_indicators
+            = Utilities::split_string_list (prm.get ("Fixed composition boundary indicators"));
+
+          for (unsigned int i = 0; i < x_fixed_composition_boundary_indicators.size(); ++i)
+            {
+              // each entry has the format (white space is optional):
+              // <boundary_id>
+              // or
+              // <boundary_id> : <plugin_name>
+              // or
+              // <boundary_id> : <composition_id>
+              // or
+              // <boundary_id> : <composition_id> : <plugin_name>.
+              // Parse the entry. We first tease apart the list.
+              const std::vector<std::string> split_parts = Utilities::split_string_list (x_fixed_composition_boundary_indicators[i], ':');
+
+              // try to translate the first part into a boundary_id
+              types::boundary_id boundary_id;
+              try
+                {
+                  boundary_id = this->get_geometry_model().translate_symbolic_boundary_name_to_id(split_parts[0]);
+                  fixed_composition_boundary_indicators.insert(boundary_id);
+                }
+              catch (const std::string &error)
+                {
+                  AssertThrow (false, ExcMessage ("While parsing the entry <Model settings/Prescribed "
+                                                  "composition indicators>, there was an error. Specifically, "
+                                                  "the conversion function complained as follows: "
+                                                  + error));
+                }
+
+              // If only a boundary_id is given, use all models for all compositions for this boundary
+              if (split_parts.size() == 1)
+                {
+                  for (unsigned int composition = 0; composition < this->n_compositional_fields(); ++composition)
+                    {
+                      AssertThrow(boundary_composition_maps[composition].find(boundary_id) == boundary_composition_maps[composition].end(),
+                                  ExcMessage("You can not specify a single boundary indicator in the "
+                                            "<Model settings/Prescribed composition indicators> parameter "
+                                            "if you already specified something for the same boundary. "
+                                            "For each boundary, either use all "
+                                            "plugins by only specifying the boundary indicator, or select one or "
+                                            "several plugins by name."));
+
+                      for (unsigned int j = 0; j < boundary_composition_names.size(); ++j)
+                        boundary_composition_maps[composition].insert(std::make_pair(boundary_id,j));
+                    }
+                }
+              else if (split_parts.size() >= 2)
+                {
+                  // Check if the two parts are something like "boundary_id : plugin_name"
+                  std::vector<std::string>::iterator plugin_name = std::find(boundary_composition_names.begin(),
+                                                                            boundary_composition_names.end(),
+                                                                            split_parts[1]);
+
+                  if (plugin_name != boundary_composition_names.end())
+                    {
+                      // The second part is a plugin name. Add this plugin for all compositions.
+                      const unsigned int plugin_position = std::distance(boundary_composition_names.begin(),
+                                                                        plugin_name);
+
+                      // Make sure this plugin was not already added for this boundary
+                      for (unsigned int composition = 0; composition < this->n_compositional_fields(); ++composition)
+                        {
+                          std::pair<std::multimap<types::boundary_id,unsigned int>::const_iterator,
+                              std::multimap<types::boundary_id,unsigned int>::const_iterator> relevant_plugins =
+                                boundary_composition_maps[composition].equal_range(boundary_id);
+
+                          for (; relevant_plugins.first != relevant_plugins.second; ++relevant_plugins.first)
+                            {
+                              const unsigned int existing_plugin_position = relevant_plugins.first->second;
+                              AssertThrow(plugin_position != existing_plugin_position,
+                                          ExcMessage("You specified the same plugin multiple times for "
+                                                    "the same boundary in the <Model settings/Fixed "
+                                                    "composition boundary indicators>. This is not supported."));
+                            }
+
+                          boundary_composition_maps[composition].insert(std::make_pair(boundary_id,plugin_position));
+                        }
+                    }
+                  else
+                    {
+                      // The second part is a compositional field. Find the compositional index
+                      // for the field. This call will fail if the string
+                      // does not identify a compositional field.
+                      const unsigned int composition = this->introspection().compositional_index_for_string(split_parts[1]);
+
+                      if (split_parts.size() == 2)
+                        {
+                          // No specific plugins assigned, so add all of them, make sure nothing was assigned before.
+                          AssertThrow(boundary_composition_maps[composition].count(boundary_id) == 0,
+                                      ExcMessage("You specified all plugins for composition " + split_parts[1] +
+                                                " for boundary " + split_parts[0] +
+                                                " in the <Model settings/Fixed "
+                                                "composition boundary indicators>, but this composition already has "
+                                                "boundary conditions assigned for this boundary. Check your "
+                                                "input file for double assignments."));
+
+                          // Add the plugins
+                          for (unsigned int plugin_position = 0; plugin_position != boundary_composition_names.size(); ++plugin_position)
+                            boundary_composition_maps[composition].insert(std::make_pair(boundary_id,plugin_position));
+                        }
+                      else if (split_parts.size() == 3)
+                        {
+                          // The third part specified a plugin. Look for it and add it.
+                          std::vector<std::string>::iterator plugin_name = std::find(boundary_composition_names.begin(),
+                                                                                    boundary_composition_names.end(),
+                                                                                    split_parts[2]);
+
+                          AssertThrow(plugin_name != boundary_composition_names.end(),
+                                      ExcMessage("The plugin name " + split_parts[2] + " in the parameter "
+                                                "<Model settings/Fixed composition boundary indicators> has to be one of "
+                                                "the selected plugin names in the parameter "
+                                                "<Boundary composition model/List of model names>. This seems to be not the "
+                                                "case. Please check your input file."));
+
+                          const unsigned int plugin_position = std::distance(boundary_composition_names.begin(),
+                                                                            plugin_name);
+
+                          std::pair<std::multimap<types::boundary_id,unsigned int>::const_iterator,
+                              std::multimap<types::boundary_id,unsigned int>::const_iterator> relevant_plugins =
+                                boundary_composition_maps[composition].equal_range(boundary_id);
+
+                          for (; relevant_plugins.first != relevant_plugins.second; ++relevant_plugins.first)
+                            {
+                              const unsigned int existing_plugin_position = relevant_plugins.first->second;
+                              AssertThrow(plugin_position != existing_plugin_position,
+                                          ExcMessage("You specified the same plugin multiple times for "
+                                                    "the same boundary in the <Model settings/Fixed "
+                                                    "composition boundary indicators>. This is not supported."));
+                            }
+
+                          boundary_composition_maps[composition].insert(std::make_pair(boundary_id,plugin_position));
+                        }
+                    }
+                }
+            }
+        }
+        prm.leave_subsection();
       }
       prm.leave_subsection ();
 
       // go through the list, create objects and let them parse
       // their own parameters
-      for (unsigned int i=0; i<model_names.size(); ++i)
+      for (unsigned int i=0; i<boundary_composition_names.size(); ++i)
         {
           // create boundary composition objects
           boundary_composition_objects.push_back (std::unique_ptr<Interface<dim> >
                                                   (std::get<dim>(registered_plugins)
-                                                   .create_plugin (model_names[i],
+                                                   .create_plugin (boundary_composition_names[i],
                                                                    "Boundary composition::Model names")));
 
           if (SimulatorAccess<dim> *sim = dynamic_cast<SimulatorAccess<dim>*>(boundary_composition_objects.back().get()))
@@ -224,13 +334,34 @@ namespace aspect
     {
       double composition = 0.0;
 
-      for (unsigned int i=0; i<boundary_composition_objects.size(); ++i)
-        composition = model_operators[i](composition,
-                                         boundary_composition_objects[i]->boundary_composition(boundary_indicator,
-                                             position,
-                                             compositional_field));
+      std::pair<std::multimap<types::boundary_id,unsigned int>::const_iterator,
+          std::multimap<types::boundary_id,unsigned int>::const_iterator> relevant_plugins =
+            boundary_composition_maps[compositional_field].equal_range(boundary_indicator);
+
+      for (; relevant_plugins.first != relevant_plugins.second; ++relevant_plugins.first)
+        {
+          const unsigned int plugin_index = relevant_plugins.first->second;
+          const double plugin_composition = boundary_composition_objects[plugin_index]->boundary_composition(boundary_indicator,
+                                            position,
+                                            compositional_field);
+
+          composition =
+            boundary_composition_operators[plugin_index](composition,
+                                                         plugin_composition);
+        }
 
       return composition;
+    }
+
+
+
+    template <int dim>
+    bool
+    Manager<dim>::has_boundary_composition(const types::boundary_id boundary_id,
+                                           const unsigned int       compositional_index) const
+    {
+      return (boundary_composition_maps[compositional_index].find(boundary_id) !=
+              boundary_composition_maps[compositional_index].end());
     }
 
 
@@ -239,7 +370,7 @@ namespace aspect
     const std::vector<std::string> &
     Manager<dim>::get_active_boundary_composition_names () const
     {
-      return model_names;
+      return boundary_composition_names;
     }
 
 
@@ -277,6 +408,34 @@ namespace aspect
       // declare the entry in the parameter file
       prm.enter_subsection ("Boundary composition model");
       {
+        prm.enter_subsection ("Model settings");
+        {
+          prm.declare_entry ("Fixed composition boundary indicators", "",
+                            Patterns::List (Patterns::Anything()),
+                            "A comma separated list of names denoting those boundaries "
+                            "on which the composition is fixed and described by the "
+                            "boundary composition object selected in its own section "
+                            "of this input file. All boundary indicators used by the geometry "
+                            "but not explicitly listed here will end up with no-flux "
+                            "(insulating) boundary conditions."
+                            "\n\n"
+                            "The names of the boundaries listed here can either by "
+                            "numbers (in which case they correspond to the numerical "
+                            "boundary indicators assigned by the geometry object), or they "
+                            "can correspond to any of the symbolic names the geometry object "
+                            "may have provided for each part of the boundary. You may want "
+                            "to compare this with the documentation of the geometry model you "
+                            "use in your model."
+                            "\n\n"
+                            "This parameter only describes which boundaries have a fixed "
+                            "composition, but not what composition should hold on these "
+                            "boundaries. The latter piece of information needs to be "
+                            "implemented in a plugin in the BoundaryComposition "
+                            "group, unless an existing implementation in this group "
+                            "already provides what you want.");
+        }
+        prm.leave_subsection();
+
         const std::string pattern_of_names
           = std::get<dim>(registered_plugins).get_pattern_of_names ();
 
@@ -299,40 +458,6 @@ namespace aspect
                           "the previous models. If only one operator is given, "
                           "the same operator is applied to all models.");
 
-        prm.declare_entry ("Model name", "unspecified",
-                           Patterns::Selection (pattern_of_names+"|unspecified"),
-                           "Select one of the following models:\n\n"
-                           +
-                           std::get<dim>(registered_plugins).get_description_string()
-                           + "\n\n" +
-                           "\\textbf{Warning}: This parameter provides an old and "
-                           "deprecated way of specifying "
-                           "boundary composition models and shouldn't be used. "
-                           "Please use 'List of model names' instead.");
-
-        prm.declare_entry ("Fixed composition boundary indicators", "",
-                           Patterns::List (Patterns::Anything()),
-                           "A comma separated list of names denoting those boundaries "
-                           "on which the composition is fixed and described by the "
-                           "boundary composition object selected in its own section "
-                           "of this input file. All boundary indicators used by the geometry "
-                           "but not explicitly listed here will end up with no-flux "
-                           "(insulating) boundary conditions."
-                           "\n\n"
-                           "The names of the boundaries listed here can either be "
-                           "numbers (in which case they correspond to the numerical "
-                           "boundary indicators assigned by the geometry object), or they "
-                           "can correspond to any of the symbolic names the geometry object "
-                           "may have provided for each part of the boundary. You may want "
-                           "to compare this with the documentation of the geometry model you "
-                           "use in your model."
-                           "\n\n"
-                           "This parameter only describes which boundaries have a fixed "
-                           "composition, but not what composition should hold on these "
-                           "boundaries. The latter piece of information needs to be "
-                           "implemented in a plugin in the BoundaryComposition "
-                           "group, unless an existing implementation in this group "
-                           "already provides what you want.");
         prm.declare_entry ("Allow fixed composition on outflow boundaries", "false for models without melt",
                            Patterns::Selection("true|false|false for models without melt"),
                            "When the composition is fixed on a given boundary as determined "

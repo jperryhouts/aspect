@@ -694,6 +694,8 @@ namespace aspect
         for (unsigned int c=0; c<introspection.n_compositional_fields; ++c)
           for (const auto p : boundary_composition_manager.get_fixed_composition_boundary_indicators())
             {
+              if (boundary_composition_manager.has_boundary_composition(p,c))
+                {
               auto lambda = [&] (const Point<dim> &x) -> double
               {
                 return boundary_composition_manager.boundary_composition(p, x, c);
@@ -710,6 +712,7 @@ namespace aspect
                                                         vector_function_object,
                                                         new_current_constraints,
                                                         introspection.component_masks.compositional_fields[c]);
+                }
             }
       }
 
@@ -963,11 +966,14 @@ namespace aspect
         &&
         compositional_fields_need_matrix_block(introspection))
       {
-        // If we need at least one compositional field block, we
-        // create a matrix block in the first compositional block. Its sparsity
-        // pattern will later be used to allocate composition matrices as
-        // needed. All other matrix blocks are left empty to save memory.
-        coupling[x.compositional_fields[0]][x.compositional_fields[0]] = DoFTools::always;
+        // // If we need at least one compositional field block, we
+        // // create a matrix block in the first compositional block. Its sparsity
+        // // pattern will later be used to allocate composition matrices as
+        // // needed. All other matrix blocks are left empty to save memory.
+        // coupling[x.compositional_fields[0]][x.compositional_fields[0]] = DoFTools::always;
+        for (unsigned int c=0; c<introspection.n_compositional_fields; ++c) {
+          coupling[x.compositional_fields[c]][x.compositional_fields[c]] = DoFTools::always;
+        }
       }
 
     // If we are using volume of fluid interface tracking, create a matrix block in the

@@ -188,17 +188,25 @@ namespace aspect
       // The first time this function is called (first iteration of first time step)
       // a specified "reference" strain rate is used as the returned value would
       // otherwise be zero.
-      const bool use_reference_strainrate = (this->get_timestep_number() == 0) &&
-                                            (strain_rate.norm() <= std::numeric_limits<double>::min());
-
+      bool use_reference_strainrate = (this->get_timestep_number() == 0) &&
+                                      (strain_rate.norm() <= std::numeric_limits<double>::min());
       double edot_ii;
       double current_edot_ii = numbers::signaling_nan<double>();
-      if (use_reference_strainrate)
+      if (use_reference_strainrate) {
         edot_ii = ref_strain_rate;
-      else
+      } else {
         // Calculate the square root of the second moment invariant for the deviatoric strain rate tensor.
-        edot_ii = std::max(std::sqrt(std::fabs(second_invariant(deviator(strain_rate)))),
-                           min_strain_rate);
+        edot_ii = std::sqrt(std::fabs(second_invariant(deviator(strain_rate))));
+
+        if (strain_rate_origin_coefficient < 1.0)
+          {
+            const unsigned int strain_rate_field_index =
+              this->introspection().compositional_index_for_name("diffused_strain_rate");
+            edot_ii = (strain_rate_origin_coefficient) * edot_ii
+                      + (1.0 - strain_rate_origin_coefficient) * composition[strain_rate_field_index];
+          }
+      }
+      edot_ii = std::max(edot_ii, min_strain_rate);
 
       // Calculate viscosities for each of the individual compositional phases
       for (unsigned int j=0; j < volume_fractions.size(); ++j)
@@ -394,20 +402,32 @@ namespace aspect
     void
     ViscoPlastic<dim>::
     fill_diffusion_outputs(const unsigned int i,
-                           const std::vector<double> &volume_fractions,
                            const MaterialModel::MaterialModelInputs<dim> &in,
                            MaterialModel::MaterialModelOutputs<dim> &out) const
     {
-       // set up variable to interpolate prescribed field outputs onto temperature field
-      PrescribedFieldOutputs<dim> *prescribed_field_out = out.template get_additional_output<PrescribedFieldOutputs<dim> >();
+      PrescribedFieldOutputs<dim> *prescribed_field_out =
+        out.template get_additional_output<PrescribedFieldOutputs<dim> >();
 
       if (prescribed_field_out != nullptr)
       {
-       const double strain_rate_invar = std::get<2> ( calculate_isostrain_viscosities(
-         volume_fractions, in.pressure[i], in.temperature[i], in.composition[i], in.strain_rate[i], viscous_flow_law, yield_mechanism) ) ;
+        // Calculate the square root of the second moment invariant for the deviatoric strain rate tensor.
+        const double edot_ii =
+          std::max(
+            std::sqrt(std::fabs(second_invariant(deviator(in.strain_rate[i])))),
+            min_strain_rate
+          );
 
-       // TODO: do not hard code the compositional variable here
-       prescribed_field_out->prescribed_field_outputs[i][1] = strain_rate_invar;
+        const unsigned int strain_rate_field_index =
+          this->introspection().compositional_index_for_name("diffused_strain_rate");
+
+        const double old_edot_ii = in.composition[i][strain_rate_field_index];
+
+        prescribed_field_out->prescribed_field_outputs[i][strain_rate_field_index] =
+          (use_strain_rate_hysteresis)
+          ?
+          (edot_ii + old_edot_ii) / 2.0
+          :
+          edot_ii;
       }
     }
 
@@ -669,8 +689,7 @@ namespace aspect
           fill_plastic_outputs(i,volume_fractions,plastic_yielding,in,out);
 
           // Fill diffusion outputs if they exist.
-          if (enable_diffusion)
-            fill_diffusion_outputs(i,volume_fractions,in,out);
+          fill_diffusion_outputs(i,in,out);
 
           if (use_elasticity)
             {
@@ -847,10 +866,16 @@ namespace aspect
           prm.declare_entry ("Include viscoelasticity", "false",
                              Patterns::Bool (),
                              "Whether to include elastic effects in the rheological formulation.");
-
-          prm.declare_entry ("Use diffusion", "false",
+          prm.declare_entry ("Current strain rate vs field strain rate coefficient", "1.0",
+                             Patterns::Double (0.),
+                             "Strength of current strain rate vs. strain rate from compositional field.");
+          // prm.declare_entry ("Use strain rate from compositional field", "false",
+          //                    Patterns::Bool (),
+          //                    "Whether to include diffusion effects in the strain rate or strains.");
+          prm.declare_entry ("Apply hysteresis to strain rate compositional field", "false",
                              Patterns::Bool (),
-                             "Whether to include diffusion effects in the strain rate or strains.");
+                             "Retain information about the previous strain rate field over "
+                             "time. Has no effect if `Use diffusion` is not enabled.");
         }
         prm.leave_subsection();
       }
@@ -891,7 +916,8 @@ namespace aspect
           strain_rheology.parse_parameters(prm);
 
           use_elasticity = prm.get_bool ("Include viscoelasticity");
-          enable_diffusion = prm.get_bool("Use diffusion");
+          strain_rate_origin_coefficient = prm.get_double ("Current strain rate vs field strain rate coefficient");
+          use_strain_rate_hysteresis = prm.get_bool ("Apply hysteresis to strain rate compositional field");
 
           if (use_elasticity)
             {

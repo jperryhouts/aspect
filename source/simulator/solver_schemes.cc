@@ -186,7 +186,76 @@ namespace aspect
     return 0.0;
   }
 
+  template <int dim>
+  std::vector<double> Simulator<dim>::assemble_and_solve_prescribed_composition (const bool compute_initial_residual,
+                                                                                 std::vector<double> *initial_residual)
+  {
+    std::vector<double> current_residual(introspection.n_compositional_fields,0.0);
 
+    if (compute_initial_residual)
+      {
+        Assert(initial_residual != nullptr, ExcInternalError());
+        Assert(initial_residual->size() == introspection.n_compositional_fields, ExcInternalError());
+      }
+
+    for (unsigned int c=0; c < introspection.n_compositional_fields; ++c)
+      {
+        const AdvectionField adv_field (AdvectionField::composition(c));
+        const typename Parameters<dim>::AdvectionFieldMethod::Kind method = adv_field.advection_method(introspection);
+        // if this is a prescribed field with diffusion, we first have to copy the material model
+        // outputs into the prescribed field before we assemble and solve the equation
+        if (method == Parameters<dim>::AdvectionFieldMethod::prescribed_field_with_diffusion)
+          {
+            TimerOutput::Scope timer (computing_timer, "Interpolate prescribed composition with diffusion");
+
+            interpolate_material_output_into_advection_field(adv_field);
+
+            // Also set the old_solution block to the prescribed field. The old
+            // solution is the one that is used to assemble the diffusion system in
+            // assemble_advection_system() for this solver scheme.
+            old_solution.block(adv_field.block_index(introspection)) = solution.block(adv_field.block_index(introspection));
+
+            assemble_advection_system (adv_field);
+
+            if (compute_initial_residual)
+              (*initial_residual)[c] = system_rhs.block(introspection.block_indices.compositional_fields[c]).l2_norm();
+
+            current_residual[c] = solve_advection(adv_field);
+
+            // Release the contents of the matrix block we used again:
+            // const unsigned int block_idx = adv_field.block_index(introspection);
+            // if (adv_field.compositional_variable!=0)
+            //   system_matrix.block(block_idx, block_idx).clear();
+          } else if (method == Parameters<dim>::AdvectionFieldMethod::prescribed_field)
+          {
+            TimerOutput::Scope timer (computing_timer, "Interpolate prescribed composition");
+
+            interpolate_material_output_into_advection_field(adv_field);
+
+            // // Call the signal in case the user wants to do something with the variable:
+            // SolverControl dummy;
+            // signals.post_advection_solver(*this,
+            //                               adv_field.is_temperature(),
+            //                               adv_field.compositional_variable,
+            //                               dummy);
+          }
+      }
+
+    // for consistency we update the current linearization point only after we have solved
+    // all fields, so that we use the same point in time for every field when solving
+    for (unsigned int c=0; c<introspection.n_compositional_fields; ++c)
+      {
+        current_linearization_point.block(introspection.block_indices.compositional_fields[c])
+          = solution.block(introspection.block_indices.compositional_fields[c]);
+
+        if ((initial_residual != nullptr) && (*initial_residual)[c] > 0)
+          current_residual[c] /= (*initial_residual)[c];
+        else
+          current_residual[c] = 0.0;
+      }
+
+    return current_residual;
+  }
 
   template <int dim>
   std::vector<double> Simulator<dim>::assemble_and_solve_composition (const bool compute_initial_residual,
@@ -232,9 +301,9 @@ namespace aspect
               current_residual[c] = solve_advection(adv_field);
 
               // Release the contents of the matrix block we used again:
-              const unsigned int block_idx = adv_field.block_index(introspection);
-              if (adv_field.compositional_variable!=0)
-                system_matrix.block(block_idx, block_idx).clear();
+              // const unsigned int block_idx = adv_field.block_index(introspection);
+              // if (adv_field.compositional_variable!=0)
+              //   system_matrix.block(block_idx, block_idx).clear();
 
               // No need to call the post_advection_solver signal here: It is
               // automatically called from solve_advection() above.
@@ -1121,6 +1190,9 @@ namespace aspect
     nonlinear_iteration = 0;
     do
       {
+        if (nonlinear_iteration > 0)
+          assemble_and_solve_prescribed_composition();
+
         relative_residual =
           assemble_and_solve_stokes(nonlinear_iteration == 0, &initial_stokes_residual);
 
@@ -1425,6 +1497,7 @@ namespace aspect
 #define INSTANTIATE(dim) \
   template double Simulator<dim>::assemble_and_solve_temperature(const bool, double*); \
   template std::vector<double> Simulator<dim>::assemble_and_solve_composition(const bool, std::vector<double> *); \
+  template std::vector<double> Simulator<dim>::assemble_and_solve_prescribed_composition(const bool, std::vector<double> *); \
   template double Simulator<dim>::assemble_and_solve_stokes(const bool, double*); \
   template void Simulator<dim>::solve_single_advection_single_stokes(); \
   template void Simulator<dim>::solve_no_advection_iterated_stokes(); \

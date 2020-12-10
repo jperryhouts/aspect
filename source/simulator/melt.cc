@@ -1671,6 +1671,15 @@ namespace aspect
           std_cxx14::make_unique<Assemblers::MeltPressureRHSCompatibilityModification<dim> > ());
       }
 
+    if (std::find(this->get_parameters().compositional_field_methods.begin(),
+                  this->get_parameters().compositional_field_methods.end(),
+                  Parameters<dim>::AdvectionFieldMethod::prescribed_field_with_diffusion)
+        != this->get_parameters().compositional_field_methods.end())
+      {
+        assemblers.advection_system.push_back(
+          std_cxx14::make_unique<aspect::Assemblers::DiffusionSystem<dim> >());
+      }
+
     assemblers.advection_system.push_back(
       std_cxx14::make_unique<Assemblers::MeltAdvectionSystem<dim> > ());
 

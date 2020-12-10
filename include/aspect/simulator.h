@@ -739,6 +739,9 @@ namespace aspect
       std::vector<double> assemble_and_solve_composition (const bool compute_initial_residual = false,
                                                           std::vector<double> *initial_residual = nullptr);
 
+      std::vector<double> assemble_and_solve_prescribed_composition (const bool compute_initial_residual = false,
+                                                                     std::vector<double> *initial_residual = nullptr);
+
       /**
        * Assemble and solve the Stokes equation.
        * This function returns the nonlinear residual after solving

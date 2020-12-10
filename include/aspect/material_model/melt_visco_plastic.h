@@ -240,6 +240,18 @@ namespace aspect
                                    MaterialModel::MaterialModelOutputs<dim> &out) const;
 
         /**
+         * A function that fills the diffusion additional output in the
+         * MaterialModelOutputs object that is handed over, if it exists.
+         * Does nothing otherwise.
+         */
+        void fill_diffusion_outputs (const unsigned int i,
+                                     const MaterialModel::MaterialModelInputs<dim> &in,
+                                     MaterialModel::MaterialModelOutputs<dim> &out) const;
+
+        bool use_strain_rate_compositional_field;
+        bool use_strain_rate_hysteresis;
+
+        /**
          * Whether to use a function defined as an input parameter for the melting rate
          */
         bool use_melting_rate_function;

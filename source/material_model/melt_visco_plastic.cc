@@ -152,18 +152,51 @@ namespace aspect
       return;
     }
 
+    template <int dim>
+    void
+    MeltViscoPlastic<dim>::
+    fill_diffusion_outputs(const unsigned int i,
+                           const MaterialModel::MaterialModelInputs<dim> &in,
+                           MaterialModel::MaterialModelOutputs<dim> &out) const
+    {
+      PrescribedFieldOutputs<dim> *prescribed_field_out =
+        out.template get_additional_output<PrescribedFieldOutputs<dim> >();
+
+      if (prescribed_field_out != nullptr)
+      {
+        // Calculate the square root of the second moment invariant for the deviatoric strain rate tensor.
+        const double edot_ii =
+          std::max(
+            std::sqrt(std::fabs(second_invariant(deviator(in.strain_rate[i])))),
+            min_strain_rate
+          );
+
+        const unsigned int strain_rate_field_index =
+          this->introspection().compositional_index_for_name("diffused_strain_rate");
+
+        const double old_edot_ii = in.composition[i][strain_rate_field_index];
+
+        prescribed_field_out->prescribed_field_outputs[i][strain_rate_field_index] =
+          (use_strain_rate_hysteresis)
+          ?
+          (edot_ii + old_edot_ii) / 2.0
+          :
+          edot_ii;
+      }
+    }
+
 
     template <int dim>
     void
     MeltViscoPlastic<dim>::
-    evaluate(const typename Interface<dim>::MaterialModelInputs &in, typename Interface<dim>::MaterialModelOutputs &out) const
+    evaluate(const typename Interface<dim>::MaterialModelInputs &in,
+             typename Interface<dim>::MaterialModelOutputs &out) const
     {
       // 1) Initial viscosities and other material properties
       for (unsigned int i=0; i<in.position.size(); ++i)
         {
           const std::vector<double> volume_fractions = MaterialUtilities::compute_volume_fractions(in.composition[i]);
           out.viscosities[i] = MaterialUtilities::average_value(volume_fractions, linear_viscosities, viscosity_averaging);
-
           out.densities[i] = MaterialUtilities::average_value(volume_fractions, densities, MaterialUtilities::CompositionalAveragingOperation::arithmetic);
           out.thermal_expansion_coefficients[i] = MaterialUtilities::average_value(volume_fractions, thermal_expansivities, MaterialUtilities::CompositionalAveragingOperation::arithmetic);
           out.thermal_conductivities[i] = MaterialUtilities::average_value(volume_fractions, thermal_conductivities, MaterialUtilities::CompositionalAveragingOperation::arithmetic);
@@ -292,12 +325,40 @@ namespace aspect
                 porosity = std::min(1.0, std::max(in.composition[i][this->introspection().compositional_index_for_name("porosity")],0.0));
 
               // calculate deviatoric strain rate (Keller et al. eq. 13)
-              const double edot_ii = ( (this->get_timestep_number() == 0 && in.strain_rate[i].norm() <= std::numeric_limits<double>::min())
-                                       ?
-                                       ref_strain_rate
-                                       :
-                                       std::max(std::sqrt(std::fabs(second_invariant(deviator(in.strain_rate[i])))),
-                                                min_strain_rate) );
+
+              // The first time this function is called (first iteration of first time step)
+              // a specified "reference" strain rate is used as the returned value would
+              // otherwise be zero.
+              bool use_reference_strainrate;
+              double edot_ii;
+              if (use_strain_rate_compositional_field) {
+                const unsigned int strain_rate_field_index =
+                  this->introspection().compositional_index_for_name("diffused_strain_rate");
+                const double diffused_strain_rate = in.composition[i][strain_rate_field_index];
+                use_reference_strainrate =  (this->get_timestep_number() == 0)
+                                            &&
+                                            (diffused_strain_rate <= std::numeric_limits<double>::min());
+
+                edot_ii = use_reference_strainrate
+                          ?
+                          ref_strain_rate
+                          :
+                          std::max(diffused_strain_rate, min_strain_rate);
+                if (use_strain_rate_hysteresis) {
+                  const double old_edot_ii = in.composition[i][strain_rate_field_index];
+                  edot_ii = (edot_ii + old_edot_ii) / 2.0;
+                }
+              } else {
+                use_reference_strainrate = (this->get_timestep_number() == 0) &&
+                                            (in.strain_rate[i].norm() <= std::numeric_limits<double>::min());
+                edot_ii = use_reference_strainrate
+                          ?
+                          ref_strain_rate
+                          :
+                          // Calculate the square root of the second moment invariant for the deviatoric strain rate tensor.
+                          std::max(std::sqrt(std::fabs(second_invariant(deviator(in.strain_rate[i])))),
+                                  min_strain_rate);
+              }
 
               // compute viscous stress
               const double viscous_stress = 2. * out.viscosities[i] * edot_ii * (1.0 - porosity);
@@ -370,6 +431,8 @@ namespace aspect
 
               // Compute the volumetric yield strength (Keller et al. eq (38))
               volumetric_yield_strength[i] = viscous_stress - tensile_strength;
+
+              fill_diffusion_outputs(i, in, out);
             }
         }
 
@@ -431,6 +494,13 @@ namespace aspect
       {
         prm.enter_subsection("Melt visco plastic");
         {
+          prm.declare_entry ("Use strain rate from compositional field", "false",
+                             Patterns::Bool (),
+                             "Diffuse the strain rate field.");
+          prm.declare_entry ("Apply hysteresis to strain rate compositional field", "false",
+                             Patterns::Bool (),
+                             "Retain information about the previous strain rate field over "
+                             "time. Has no effect if `Use diffusion` is not enabled.");
 
           prm.declare_entry ("Reference temperature", "293", Patterns::Double(0),
                              "For calculating density by thermal expansivity. Units: $K$");
@@ -675,6 +745,8 @@ namespace aspect
       {
         prm.enter_subsection("Melt visco plastic");
         {
+          use_strain_rate_compositional_field = prm.get_bool("Use strain rate from compositional field");
+          use_strain_rate_hysteresis = prm.get_bool("Apply hysteresis to strain rate compositional field");
 
           ref_temperature = prm.get_double ("Reference temperature");
           densities = Utilities::possibly_extend_from_1_to_N (Utilities::string_to_double(Utilities::split_string_list(prm.get("Densities"))),
@@ -799,6 +871,12 @@ namespace aspect
           const unsigned int n_points = out.n_evaluation_points();
           out.additional_outputs.push_back(
             std_cxx14::make_unique<MaterialModel::PlasticAdditionalOutputs<dim>> (n_points));
+        }
+      if (out.template get_additional_output<PrescribedFieldOutputs<dim> >() == nullptr)
+        {
+          const unsigned int n_points = out.n_evaluation_points();
+          out.additional_outputs.push_back(
+            std_cxx14::make_unique<MaterialModel::PrescribedFieldOutputs<dim>> (n_points, this->n_compositional_fields()));
         }
     }
 
